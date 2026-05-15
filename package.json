@@ -1,11 +1,17 @@
 {
-  "name": "@photon-ai/otel",
-  "module": "src/index.ts",
-  "type": "module",
   "devDependencies": {
-    "@types/bun": "latest"
+    "@biomejs/biome": "2.4.15",
+    "@types/bun": "latest",
+    "ultracite": "7.7.0"
   },
+  "name": "@photon-ai/otel",
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "check": "ultracite check",
+    "fix": "ultracite fix"
   }
 }
