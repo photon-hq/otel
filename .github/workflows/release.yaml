@@ -12,4 +12,5 @@ jobs:
       pull-requests: read
     with:
       service-name: photon-otel
+      publish-command: "bunx clean-publish --package-manager npm"
     secrets: inherit
