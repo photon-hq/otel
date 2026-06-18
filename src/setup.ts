@@ -12,6 +12,7 @@ import {
   BasicTracerProvider,
   BatchSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import { type LogLevel, setLogLevel } from "./logger";
 
 export interface SetupOtelOptions {
   /**
@@ -26,6 +27,12 @@ export interface SetupOtelOptions {
    * conflicts.
    */
   headers?: Record<string, string>;
+  /**
+   * Minimum log level emitted by `createLogger()` (to both OTLP and console).
+   * The `LOG_LEVEL` env var still takes precedence. Defaults to `debug` in
+   * development and `info` otherwise.
+   */
+  logLevel?: LogLevel;
   /**
    * Extra resource attributes attached to every span/log alongside
    * `service.name` / `service.version`.
@@ -95,6 +102,10 @@ function resolveLogsEndpoint(base: string | undefined): string | undefined {
 export function setupOtel(options: SetupOtelOptions): OtelHandle {
   if (activeHandle) {
     return activeHandle;
+  }
+
+  if (options.logLevel) {
+    setLogLevel(options.logLevel);
   }
 
   const tracesEndpoint = resolveTracesEndpoint(options.endpoint);
