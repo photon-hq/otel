@@ -5,7 +5,7 @@ A DX-focused OpenTelemetry wrapper for **Bun** and **Node.js**.
 Vanilla OTel works, but the setup is verbose, the logger plumbing is awkward, and PII scrubbing is on you. `@photon-ai/otel` wraps the OTLP/HTTP stack into a few well-named functions:
 
 - **`setupOtel()`** — idempotent one-call bootstrap for traces + logs. Honors all standard `OTEL_EXPORTER_OTLP_*` env vars.
-- **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture.
+- **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and is gated by a configurable `LOG_LEVEL`.
 - **`withSpan(name, attrs?, fn)`** — wrap any sync or async function in a span; errors are recorded and PII in the error message is scrubbed before being attached to span status.
 - **`sanitizeEmail` / `sanitizePhone` / `sanitizeErrorMessage`** — PII helpers you can reuse anywhere.
 
@@ -47,6 +47,8 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `endpoint` option) is unset, `setupOtel
 | `setupOtel(options): OtelHandle`              | Boots OTLP/HTTP traces + logs. Idempotent. Returns `{ shutdown(): Promise<void> }`.                        |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
 | `createLogger(module): PhotonLogger`          | Returns `{ info, warn, error, debug }`. Each call emits to OTel + `console`, correlates to active span.    |
+| `setLogLevel(level): void`                    | Set the minimum level emitted (`debug`/`info`/`warn`/`error`/`silent`). `LOG_LEVEL` env still wins.        |
+| `getLogLevel(): LogLevel`                     | Current effective level after env / override / default resolution.                                        |
 | `withSpan(name, fn)`                          | Wraps `fn` (sync or async) in a span. Records exceptions and scrubs PII in error messages.                 |
 | `withSpan(name, attrs, fn)`                   | Same as above but attaches `attrs` to the span.                                                            |
 | `sanitizeEmail(input)`                        | Masks an email: `foo.bar@example.com` → `fo***@e***.com`.                                                  |
@@ -57,13 +59,42 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `endpoint` option) is unset, `setupOtel
 ### Logger signatures
 
 ```ts
-log.info(message, attrs?);
-log.warn(message, attrs?);
-log.error(message, attrs?, error?); // only error() accepts an exception
-log.debug(message, attrs?);
+log.debug(message, attrs?, error?);
+log.info(message, attrs?, error?);
+log.warn(message, attrs?, error?); // attach the exception that caused a retry
+log.error(message, attrs?, error?);
 ```
 
-`attrs` is `Record<string, string | number | boolean | undefined>`. `undefined` values are dropped.
+Every level takes the same `(message, attrs?, error?)` shape — attach an exception to a
+`warn`/`info`/`debug`, not just `error`. `attrs` is
+`Record<string, string | number | boolean | undefined>`; `undefined` values are dropped.
+
+An `Error` is recorded as `exception.type` / `exception.message` / `exception.stacktrace`
+on the OTLP record (per the OTel exception semantic convention); a non-`Error` throw is
+coerced so at least `exception.message` is preserved.
+
+Each call also prints a single human-readable console line — `[module] LEVEL message
+{ ...attrs }` plus the raw error (so the runtime renders the full stack) — routed to
+`console.debug` / `console.info` / `console.warn` / `console.error` by severity. Both
+sinks share one level gate.
+
+### Log level
+
+Logs below the active level are dropped from **both** OTLP and the console. The level is
+resolved fresh on every call, so changes take effect immediately:
+
+1. `LOG_LEVEL` env var (`debug` | `info` | `warn` | `error` | `silent`) — wins if set.
+2. `setLogLevel(level)` or `setupOtel({ logLevel })`.
+3. Default: `debug` in development (`DEPLOYMENT_ENV` unset or `development`), `info` otherwise.
+
+```ts
+import { setLogLevel } from "@photon-ai/otel";
+
+setLogLevel("warn"); // debug + info now suppressed everywhere
+// or set LOG_LEVEL=warn in the environment, which overrides the call above
+```
+
+`"silent"` suppresses everything, including errors.
 
 ## Configuration
 
@@ -75,7 +106,8 @@ Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`      | Full traces URL (overrides the base for traces).        |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`        | Full logs URL (overrides the base for logs).            |
 | `OTEL_EXPORTER_OTLP_HEADERS`              | `key=value,key=value` headers; merged with `options.headers` (env wins). |
-| `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`. |
+| `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`. Also drives the default log level. |
+| `LOG_LEVEL`                               | Minimum log level: `debug` \| `info` \| `warn` \| `error` \| `silent`. Overrides `setLogLevel()` / `setupOtel({ logLevel })`. |
 
 ## Running on Node vs Bun
 

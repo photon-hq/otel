@@ -1,5 +1,12 @@
 // biome-ignore lint/performance/noBarrelFile: package public entry point
-export { createLogger, type LogAttrs, type PhotonLogger } from "./logger";
+export {
+  createLogger,
+  getLogLevel,
+  type LogAttrs,
+  type LogLevel,
+  type PhotonLogger,
+  setLogLevel,
+} from "./logger";
 export {
   sanitizeEmail,
   sanitizeErrorMessage,
