@@ -121,3 +121,15 @@ Biome's linter will catch most issues automatically. Focus your attention on:
 ---
 
 Most formatting and common issues are automatically fixed by Biome. Run `bun x ultracite fix` before committing to ensure compliance.
+
+---
+
+## Cursor Cloud specific instructions
+
+This is a Bun-first TypeScript **library** (`@photon-ai/otel`), not a long-running service — "running it" means exercising the public API or the test suites. Standard commands live in `package.json` (`build`, `test`, `test:integration`, `check`, `fix`) and `README.md` / `tests/integration/README.md`.
+
+- **Bun is the package manager/runtime.** It is preinstalled at `~/.bun/bin/bun` (also on `PATH` via `~/.bashrc` for interactive shells). Non-interactive shells may not have it on `PATH` — use the absolute path or run via a login shell. The update script keeps deps current with `bun install --frozen-lockfile`.
+- **Lint / unit tests / build are offline:** `bun x ultracite check`, `bun run test` (51 unit tests, integration excluded), `bun run build`. `ultracite check` may emit a harmless warning about a broken symlink under `.cursor/rules/` — unrelated to source.
+- **Integration tests need Docker + a live OTel Collector** (excluded from `bun run test`). Docker is preinstalled but there is **no systemd**, so start the daemon manually if it isn't running: `sudo dockerd` (e.g. in a tmux session). The daemon is configured for `fuse-overlayfs` with the containerd snapshotter disabled (required for Docker 29 in this VM).
+- **Run integration tests:** from `tests/integration` do `mkdir -p output && sudo docker compose up -d`, wait for `curl -sf http://localhost:13133/`, then from the repo root run `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun --bun run test:integration`. The `--bun` flag is required so vitest runs under Bun (its `node` shebang would otherwise silently use Node and skip Bun's native-fetch path).
+- **Collector output is buffered.** The `file` exporter (`tests/integration/output/{traces,logs}.json`) may lag; for quick manual verification of delivered telemetry, read the `debug` exporter mirror via `sudo docker compose logs` instead.
