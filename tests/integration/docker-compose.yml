@@ -1,0 +1,25 @@
+# Real OpenTelemetry Collector for the end-to-end integration test.
+#
+# Local usage:
+#   cd tests/integration
+#   mkdir -p output
+#   docker compose up -d
+#   # ...wait for http://localhost:13133 to return 200, then run the test...
+#   docker compose down -v
+#
+# See README.md for the full local workflow.
+services:
+  otel-collector:
+    # Pinned to a concrete contrib release (the `file` exporter lives only in
+    # the contrib distribution). Bump deliberately; do not use `latest`.
+    image: otel/opentelemetry-collector-contrib:0.155.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    # The image defaults to a non-root user (10001); run as root so the `file`
+    # exporter can write into the bind-mounted ./output regardless of host uid.
+    user: "0:0"
+    volumes:
+      - ./collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./output:/output
+    ports:
+      - "4318:4318" # OTLP/HTTP receiver
+      - "13133:13133" # health_check extension

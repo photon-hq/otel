@@ -1,0 +1,74 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    # Blacksmith runners are a drop-in for GitHub-hosted runners (Docker is
+    # available, so the docker compose collector step works unchanged).
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: bun
+          - runtime: node
+            node-version: "22"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - if: matrix.runtime == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: bun install --frozen-lockfile
+
+      - name: Start OTel Collector
+        working-directory: tests/integration
+        run: |
+          mkdir -p output
+          docker compose up -d
+
+      - name: Wait for collector health
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:13133/ >/dev/null; then
+              echo "collector healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "collector did not become healthy in time"
+          exit 1
+
+      - if: matrix.runtime == 'bun'
+        run: bun run test:integration
+        env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+
+      - if: matrix.runtime == 'node'
+        run: node ./node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts
+        env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+
+      - if: ${{ failure() }}
+        name: Dump collector logs and received telemetry
+        working-directory: tests/integration
+        run: |
+          echo "===== collector logs ====="
+          docker compose logs || true
+          echo "===== traces.json ====="
+          cat output/traces.json || true
+          echo "===== logs.json ====="
+          cat output/logs.json || true
+
+      - if: ${{ always() }}
+        name: Tear down collector
+        working-directory: tests/integration
+        run: docker compose down -v
