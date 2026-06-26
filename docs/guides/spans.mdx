@@ -1,0 +1,165 @@
+---
+title: "Spans"
+description: "Wrap sync and async work with withSpan, attach attributes, handle errors, and design useful trace structure."
+---
+
+`withSpan()` wraps a function in an active OpenTelemetry span.
+
+Use it for meaningful units of work: request handling, jobs, provider calls, domain operations, and retry loops.
+
+## Basic usage
+
+```ts
+import { withSpan } from "@photon-ai/otel";
+
+const result = await withSpan("orders.calculate-total", async () => {
+  return calculateTotal();
+});
+```
+
+`withSpan()` always returns a `Promise<T>`, even when the callback is synchronous.
+
+```ts
+const value = await withSpan("cache.read", () => cache.get("key"));
+```
+
+## Add attributes
+
+Pass attributes as the second argument.
+
+```ts
+await withSpan(
+  "orders.create",
+  {
+    "order.id": "ord_123",
+    "customer.tier": "pro",
+    "cart.item_count": 3,
+  },
+  async () => {
+    await saveOrder();
+  }
+);
+```
+
+Attributes accept strings, numbers, booleans, and `undefined`. `undefined` values are filtered out before they are attached to the span.
+
+## Success behavior
+
+When the callback resolves, `withSpan()` sets the span status to `OK`.
+
+The span is ended in a `finally` block, so it ends even if the callback throws.
+
+## Error behavior
+
+When the callback throws, `withSpan()`:
+
+1. Records the exception on the span.
+2. Sets the `error.type` attribute.
+3. Sets the span status to `ERROR`.
+4. Sanitizes email addresses and phone numbers in the span status message.
+5. Rethrows the original error.
+
+```ts
+await withSpan("customer.lookup", async () => {
+  throw new Error("customer foo.bar@example.com not found");
+});
+```
+
+The original error still reaches your caller. The sanitized message is only used for the span status.
+
+## Why errors are rethrown
+
+Observability should not change application control flow.
+
+If a payment function throws before it is instrumented, it should still throw after it is instrumented. `withSpan()` records the failure and then preserves the original behavior.
+
+## Span names
+
+Choose names that describe operations, not individual values.
+
+Good examples:
+
+- `orders.create`
+- `payments.authorize`
+- `inventory.reserve`
+- `webhooks.stripe.handle`
+
+Avoid names like:
+
+- `orders.create.ord_123`
+- `GET /users/alice@example.com`
+- `retry attempt 3`
+
+Put variable values in attributes instead. Stable span names keep traces readable and prevent high-cardinality operation names in your backend.
+
+## Attribute design
+
+Span attributes should answer "what was this operation about?"
+
+Good examples:
+
+- `order.id`
+- `provider.name`
+- `retry.attempt`
+- `queue.name`
+- `feature.flag`
+
+Avoid:
+
+- raw request bodies
+- auth headers
+- full payment payloads
+- email addresses and phone numbers unless already masked
+
+`withSpan()` sanitizes status messages on thrown errors, but it does not sanitize attributes. You own attribute safety.
+
+## Nesting spans
+
+Because setup installs an async context manager, spans created inside an active span become children.
+
+```ts
+await withSpan("orders.create", async () => {
+  await withSpan("inventory.reserve", async () => {
+    await reserveInventory();
+  });
+
+  await withSpan("payments.authorize", async () => {
+    await authorizePayment();
+  });
+});
+```
+
+This produces a trace tree that mirrors the logical flow of the operation.
+
+## Logging inside spans
+
+`createLogger()` emits logs with the active OpenTelemetry context.
+
+```ts
+await withSpan("orders.create", { "order.id": "ord_123" }, async () => {
+  log.info("saving order", { orderId: "ord_123" });
+});
+```
+
+That log record can be correlated with the span through the trace ID.
+
+## When not to create a span
+
+Do not wrap every line of code.
+
+Avoid spans for:
+
+- trivial getters
+- tiny pure functions
+- every loop iteration in a large batch
+- operations that add no useful debugging context
+
+Too many spans make traces noisy and expensive. Prefer spans around boundaries and decisions: external calls, database operations, domain workflows, retries, and queue processing.
+
+## Best practices
+
+- Use stable, low-cardinality span names.
+- Attach only the attributes you will actually search or debug with.
+- Keep sensitive data out of attributes.
+- Use nested spans to show operation structure, not implementation trivia.
+- Let errors propagate after instrumentation records them.

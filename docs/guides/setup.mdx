@@ -1,0 +1,163 @@
+---
+title: "Setup"
+description: "Initialize traces, logs, context propagation, and shutdown behavior with setupOtel."
+---
+
+`setupOtel()` is the bootstrap function for the package.
+
+Call it once during process startup, before request handlers, workers, cron jobs, or background consumers start doing work.
+
+```ts
+import { setupOtel } from "@photon-ai/otel";
+
+const telemetry = setupOtel({
+  serviceName: "payments-api",
+  serviceVersion: "1.0.0",
+});
+```
+
+## What setup installs
+
+`setupOtel()` installs four global OpenTelemetry pieces:
+
+1. An `AsyncLocalStorageContextManager`
+2. A W3C trace-context and baggage propagator
+3. A `BasicTracerProvider`
+4. A `LoggerProvider`
+
+The context manager is what lets active spans survive across `await` boundaries. Without it, a log emitted inside an async span would not reliably know which trace it belongs to.
+
+The propagator is what lets `traceparent` and baggage be injected into outbound requests.
+
+The tracer provider and logger provider own the span and log pipelines.
+
+## Endpoint behavior
+
+When a traces endpoint is resolved, setup creates a `BatchSpanProcessor` with an OTLP trace exporter.
+
+When a logs endpoint is resolved, setup creates a `BatchLogRecordProcessor` with an OTLP log exporter.
+
+When an endpoint is missing, the corresponding processor list is empty. This is why the package can run locally without a collector.
+
+```ts
+setupOtel({
+  serviceName: "payments-api",
+  // No endpoint: providers are installed, exporters are not.
+});
+```
+
+## Why setup is idempotent
+
+OpenTelemetry providers are process-global. Replacing them halfway through startup can break correlation or cause duplicated exports.
+
+`setupOtel()` stores the active handle internally. If it is called again in the same process, it returns that existing handle.
+
+That means libraries and shared service utilities can call setup defensively without clobbering the application-level setup that ran first.
+
+```ts
+const first = setupOtel({ serviceName: "api" });
+const second = setupOtel({ serviceName: "ignored" });
+
+console.log(first === second); // true
+```
+
+The first call wins until `shutdown()` clears the active handle.
+
+## Resource attributes
+
+Setup builds a resource with:
+
+- `service.name` from `serviceName`
+- `service.version` from `serviceVersion`, when provided
+- `deployment.environment` from `DEPLOYMENT_ENV`, defaulting to `development`
+- any `resourceAttributes` you pass
+
+These attributes are attached to spans and logs.
+
+```ts
+setupOtel({
+  serviceName: "payments-api",
+  serviceVersion: "2026.06.26",
+  resourceAttributes: {
+    "service.namespace": "commerce",
+    "deployment.region": "us-east-1",
+  },
+});
+```
+
+## Headers and credentials
+
+Headers passed to `setupOtel()` are merged with `OTEL_EXPORTER_OTLP_HEADERS`.
+
+Environment headers win on conflicts. This protects production configuration from being accidentally overridden by application defaults.
+
+```ts
+setupOtel({
+  serviceName: "payments-api",
+  headers: {
+    Authorization: "Bearer local-token",
+  },
+});
+```
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer real-token"
+```
+
+## Fetch instrumentation during setup
+
+`setupOtel()` can also patch `globalThis.fetch`.
+
+Default behavior:
+
+- If a traces endpoint exists, fetch instrumentation is enabled.
+- If no traces endpoint exists, fetch instrumentation is disabled.
+
+This default avoids wrapping fetch in completely local no-export runs while still giving production services outbound HTTP spans automatically.
+
+You can override it:
+
+```ts
+setupOtel({
+  serviceName: "payments-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: false,
+});
+```
+
+```ts
+setupOtel({
+  serviceName: "payments-api",
+  instrumentFetch: true,
+});
+```
+
+## Shutdown
+
+The returned handle exposes `shutdown()`.
+
+```ts
+const telemetry = setupOtel({ serviceName: "payments-api" });
+
+process.on("SIGTERM", async () => {
+  await telemetry.shutdown();
+  process.exit(0);
+});
+```
+
+Shutdown does three things:
+
+1. Restores the original `globalThis.fetch` if setup patched it.
+2. Shuts down the tracer provider.
+3. Shuts down the logger provider.
+
+The provider shutdown calls are awaited with `Promise.allSettled()`, so both providers get a chance to shut down even if one fails.
+
+## Best practices
+
+- Call setup once from the application entry point.
+- Keep the returned handle and shut it down in scripts, tests, and graceful termination paths.
+- Put endpoint and credential values in environment variables.
+- Treat `serviceName` as a stable service identity.
+- Use `resourceAttributes` for process-wide facts, not request-specific values.
+- Do not call setup after request handling has already started; install global providers before work begins.

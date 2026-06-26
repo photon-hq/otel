@@ -1,0 +1,152 @@
+---
+title: "Signals and correlation"
+description: "How traces, logs, context propagation, and fetch spans work together in one request flow."
+---
+
+Observability is most useful when signals connect to each other.
+
+`@photon-ai/otel` is designed so application spans, structured logs, and outbound fetch spans share context.
+
+## The request-flow model
+
+A typical operation looks like this:
+
+```ts
+await withSpan("orders.create", { "order.id": orderId }, async () => {
+  log.info("creating order", { orderId });
+
+  await fetch("https://inventory.example.com/reserve", {
+    method: "POST",
+    body: JSON.stringify({ orderId }),
+  });
+});
+```
+
+The flow has three connected signals:
+
+1. `withSpan()` creates the `orders.create` span.
+2. `createLogger()` emits a log record in the active context.
+3. fetch instrumentation creates a child `POST` span and injects `traceparent` downstream.
+
+In a telemetry backend, the log and both spans can share the same trace ID.
+
+## Context is the glue
+
+OpenTelemetry context is process-local state that tracks the current active span.
+
+`setupOtel()` installs `AsyncLocalStorageContextManager`, which keeps that context across async boundaries.
+
+Without a context manager, this sequence would be unreliable:
+
+```ts
+await withSpan("outer", async () => {
+  await Promise.resolve();
+  log.info("still inside outer");
+});
+```
+
+The log after `await` needs to know the active span is still `outer`.
+
+## Propagation is the network boundary
+
+Context inside one process is not enough for distributed tracing.
+
+When a service calls another service, the trace context must be serialized into request headers.
+
+`setupOtel()` installs:
+
+- W3C trace-context propagation
+- W3C baggage propagation
+
+Fetch instrumentation then injects those values into outbound request headers.
+
+The most important header is `traceparent`.
+
+## Parent and child spans
+
+When `instrumentFetch()` runs inside an active span, the fetch span becomes a child of that active span.
+
+```ts
+await withSpan("parent", async () => {
+  await fetch("https://api.example.com/data");
+});
+```
+
+The trace tree becomes:
+
+```txt
+parent
+└── GET
+```
+
+If the downstream service also uses W3C trace context, its server span can continue the same trace.
+
+## Logs inside spans
+
+`createLogger()` emits OpenTelemetry log records with `context.active()`.
+
+That means logs emitted inside a span can carry trace correlation fields when exported.
+
+```ts
+await withSpan("payments.authorize", async () => {
+  log.info("calling provider", { provider: "stripe" });
+});
+```
+
+This is the reason the logger does not require you to manually pass trace IDs.
+
+Manual trace ID plumbing is error-prone. Active context is the OpenTelemetry-native way to solve the same problem.
+
+## Error correlation
+
+Failures can show up in several places:
+
+- the application span status becomes `ERROR`
+- an exception event is recorded on the span
+- a log can include exception attributes
+- a fetch span can become `ERROR` for HTTP `4xx` or `5xx`
+- a thrown fetch error can be recorded on the fetch span
+
+Use all of these intentionally.
+
+For example, a retryable provider failure may be a warning log but an error fetch span:
+
+```ts
+try {
+  await fetch("https://provider.example.com/charge");
+} catch (error) {
+  log.warn("provider request failed, retrying", { attempt: 1 }, error);
+}
+```
+
+The span records the failed outbound request. The log explains the application decision to retry.
+
+## Attribute roles
+
+Use different attribute scopes for different questions.
+
+| Scope | Use it for | Example |
+| --- | --- | --- |
+| Resource attributes | facts about the process | `service.name`, `deployment.environment` |
+| Span attributes | facts about an operation | `order.id`, `provider.name` |
+| Log attributes | facts about an event | `attempt`, `queueName` |
+| Fetch attributes | outbound HTTP metadata | `http.request.method`, `server.address` |
+
+Putting everything everywhere makes telemetry noisy. Put values where they answer a clear debugging question.
+
+## Sampling note
+
+This package does not configure custom sampling.
+
+Sampling behavior comes from the OpenTelemetry SDK defaults unless you add your own OpenTelemetry configuration outside this wrapper.
+
+If you later add sampling, remember that logs may still be emitted even when some traces are not retained, depending on your backend and collector pipeline.
+
+## Best practices
+
+- Create spans for meaningful operation boundaries.
+- Log events that explain decisions inside those spans.
+- Let fetch instrumentation handle outbound propagation.
+- Use stable attribute names across services.
+- Avoid duplicating the same high-cardinality value in every signal unless it is truly useful.
+- Keep PII and secrets out of attributes and URLs.

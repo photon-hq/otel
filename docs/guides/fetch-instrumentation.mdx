@@ -1,0 +1,145 @@
+---
+title: "Fetch instrumentation"
+description: "Trace outbound globalThis.fetch calls, propagate W3C trace context, filter URLs, and understand Bun-specific design."
+---
+
+`instrumentFetch()` wraps `globalThis.fetch` so outbound HTTP requests create client spans and carry trace context downstream.
+
+Most services should let `setupOtel()` manage this automatically.
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+});
+```
+
+When a traces endpoint is configured, setup patches fetch by default.
+
+## What each fetch span contains
+
+For an outbound request, the wrapper creates a span with:
+
+- kind `CLIENT`
+- name set to the uppercased HTTP method, such as `GET` or `POST`
+- `http.request.method`
+- `url.full`
+- `server.address`
+- `server.port`, when resolvable
+- `http.response.status_code`, when a response is received
+
+Statuses:
+
+- `2xx` and `3xx` responses are marked `OK`.
+- `4xx` and `5xx` responses are marked `ERROR`.
+- thrown network errors are recorded as exceptions and marked `ERROR`.
+
+## Trace propagation
+
+The wrapper injects the active OpenTelemetry context into outgoing headers using W3C propagation.
+
+That means downstream services receive a `traceparent` header and can continue the same trace.
+
+```ts
+await withSpan("orders.enrich", async () => {
+  await fetch("https://inventory.example.com/items/sku_123");
+});
+```
+
+The fetch span becomes a child of `orders.enrich`, and the downstream request receives the trace context.
+
+## Manual instrumentation
+
+You can patch fetch directly:
+
+```ts
+import { instrumentFetch } from "@photon-ai/otel";
+
+const instrumentation = instrumentFetch();
+
+await fetch("https://api.example.com");
+
+instrumentation.unpatch();
+```
+
+This is useful in tests, custom bootstrap flows, or tools that do not call `setupOtel()`.
+
+## Filtering URLs
+
+Use `ignore` to skip noisy or sensitive requests.
+
+```ts
+instrumentFetch({
+  ignore: (url) => url.includes("/healthz"),
+});
+```
+
+When a URL is ignored:
+
+- the original request still runs
+- no span is emitted
+- trace headers are not injected by this wrapper
+
+Use this for health checks, high-volume polling, or URLs with secrets in the query string.
+
+## Automatic OTLP endpoint exclusion
+
+When `setupOtel()` starts fetch instrumentation, it automatically excludes the package's own OTLP trace and log endpoints.
+
+That prevents exporter traffic from tracing itself.
+
+This matters because some runtimes or exporter versions may use fetch internally. Without self-exclusion, telemetry export could recursively create more telemetry.
+
+## Idempotent patching
+
+`instrumentFetch()` is idempotent.
+
+If fetch is already wrapped by this package, a second call does not stack another wrapper.
+
+The implementation uses a global symbol marker to remember the original fetch. That guard works even if two copies of the package are loaded, such as Bun consuming TypeScript source while another path consumes the built ESM bundle.
+
+## Restoring fetch
+
+The returned handle exposes `unpatch()`.
+
+```ts
+const handle = instrumentFetch();
+handle.unpatch();
+```
+
+`unpatch()` restores the original fetch only if the global fetch is still the wrapper this handle installed. That avoids overwriting a later patch installed by other code.
+
+## Request handling details
+
+The wrapper preserves common fetch behavior:
+
+- String and URL input keep `method`, `body`, `headers`, and `signal` from `init`.
+- `Request` input keeps existing request headers and merges `init.headers`.
+- Already-consumed `Request` bodies are not rebuilt. Headers are mutated in place so trace context can still be injected without trying to recreate an unusable body.
+- Extra own properties on the original fetch, such as Bun's `fetch.preconnect`, are copied onto the wrapper.
+
+These details keep instrumentation from changing the request semantics your application depends on.
+
+## Why Bun needs a fetch wrapper
+
+Many Node-focused OpenTelemetry HTTP instrumentations rely on `diagnostics_channel` events.
+
+Bun's native `fetch` does not emit the events those instrumentations need. As a result, those standard instrumentations do not produce spans for Bun-native fetch calls.
+
+Wrapping `globalThis.fetch` is the portable approach that works on Bun and Node.
+
+## Privacy caveat
+
+Fetch spans include `url.full`, which includes the query string.
+
+Do not put secrets, tokens, emails, or phone numbers in query strings. If you must call an endpoint with sensitive query parameters, use `ignore` to skip that URL or sanitize upstream.
+
+Thrown fetch error messages are sanitized before being used as span status messages, but URL attributes are not sanitized.
+
+## Best practices
+
+- Prefer automatic setup-managed instrumentation for services.
+- Use `ignore` for health checks and sensitive URLs.
+- Keep secrets out of query strings.
+- Call `shutdown()` or `unpatch()` in tests to restore global fetch.
+- Install setup before code starts making outbound requests.

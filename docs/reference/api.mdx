@@ -1,0 +1,262 @@
+---
+title: "API reference"
+description: "Reference for the public exports from @photon-ai/otel."
+---
+
+Import everything from the package root:
+
+```ts
+import {
+  createLogger,
+  getLogLevel,
+  instrumentFetch,
+  isOtelActive,
+  sanitizeEmail,
+  sanitizeErrorMessage,
+  sanitizePhone,
+  setLogLevel,
+  setupOtel,
+  withSpan,
+} from "@photon-ai/otel";
+```
+
+## `setupOtel(options)`
+
+Boots OpenTelemetry traces and logs.
+
+```ts
+function setupOtel(options: SetupOtelOptions): OtelHandle;
+```
+
+### `SetupOtelOptions`
+
+```ts
+interface SetupOtelOptions {
+  serviceName: string;
+  serviceVersion?: string;
+  endpoint?: string;
+  headers?: Record<string, string>;
+  resourceAttributes?: Record<string, string | number | boolean>;
+  logLevel?: LogLevel;
+  instrumentFetch?: boolean | InstrumentFetchOptions;
+}
+```
+
+### Behavior
+
+- Idempotent within a process.
+- Installs async context management.
+- Installs W3C trace-context and baggage propagation.
+- Configures OTLP/HTTP trace and log exporters when endpoints are available.
+- Supports no-endpoint local development.
+- Optionally instruments fetch.
+- Returns an `OtelHandle`.
+
+## `OtelHandle`
+
+```ts
+interface OtelHandle {
+  shutdown(): Promise<void>;
+}
+```
+
+`shutdown()` unpatches fetch instrumentation if setup installed it, shuts down the tracer provider, shuts down the logger provider, and clears the active setup handle.
+
+## `isOtelActive()`
+
+Returns whether `setupOtel()` has an active handle in the current process.
+
+```ts
+function isOtelActive(): boolean;
+```
+
+This is mainly useful for tests, diagnostics, and cleanup paths.
+
+## `createLogger(module)`
+
+Creates a structured logger.
+
+```ts
+function createLogger(module: string): PhotonLogger;
+```
+
+### `PhotonLogger`
+
+```ts
+interface PhotonLogger {
+  debug(message: string, attrs?: LogAttrs, error?: unknown): void;
+  info(message: string, attrs?: LogAttrs, error?: unknown): void;
+  warn(message: string, attrs?: LogAttrs, error?: unknown): void;
+  error(message: string, attrs?: LogAttrs, error?: unknown): void;
+}
+```
+
+### `LogAttrs`
+
+```ts
+type LogAttrs = Record<string, string | number | boolean | undefined>;
+```
+
+Undefined values are dropped.
+
+### Behavior
+
+- Emits an OpenTelemetry log record.
+- Emits one console line.
+- Adds `log.module`.
+- Adds user attributes.
+- Adds exception attributes when an error is passed.
+- Uses active OpenTelemetry context for trace correlation.
+- Applies the active log-level gate to both OpenTelemetry and console output.
+
+## `setLogLevel(level)`
+
+Sets the programmatic minimum log level.
+
+```ts
+function setLogLevel(level: LogLevel): void;
+```
+
+`LOG_LEVEL` still wins when it is set.
+
+## `getLogLevel()`
+
+Returns the current effective log level.
+
+```ts
+function getLogLevel(): LogLevel;
+```
+
+The value is resolved from `LOG_LEVEL`, then programmatic override, then deployment default.
+
+## `LogLevel`
+
+```ts
+type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
+```
+
+`silent` suppresses every logger call, including errors.
+
+## `withSpan(name, fn)`
+
+Wraps a sync or async callback in an active span.
+
+```ts
+function withSpan<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
+```
+
+## `withSpan(name, attrs, fn)`
+
+Wraps a sync or async callback in an active span and attaches attributes.
+
+```ts
+function withSpan<T>(
+  name: string,
+  attrs: LogAttrs,
+  fn: () => Promise<T> | T
+): Promise<T>;
+```
+
+### Behavior
+
+- Starts an active span.
+- Sets attributes when provided.
+- Marks success as `OK`.
+- Records thrown exceptions.
+- Sets `error.type` on failures.
+- Sanitizes email and phone values in the span status message.
+- Ends the span in a `finally` block.
+- Rethrows the original error.
+
+If the callback argument is missing, it throws `Error("withSpan: function argument is required")`.
+
+## `instrumentFetch(options)`
+
+Wraps `globalThis.fetch`.
+
+```ts
+function instrumentFetch(options?: InstrumentFetchOptions): FetchInstrumentation;
+```
+
+### `InstrumentFetchOptions`
+
+```ts
+interface InstrumentFetchOptions {
+  ignore?: (url: string) => boolean;
+}
+```
+
+### `FetchInstrumentation`
+
+```ts
+interface FetchInstrumentation {
+  unpatch(): void;
+}
+```
+
+### Behavior
+
+- Creates a client span for each non-ignored outbound fetch.
+- Names spans by uppercased HTTP method.
+- Adds HTTP semantic attributes.
+- Injects W3C trace context into outgoing headers.
+- Marks `4xx` and `5xx` responses as `ERROR`.
+- Records thrown fetch errors.
+- Sanitizes thrown error messages before setting span status messages.
+- Avoids double wrapping.
+- Restores the original fetch through `unpatch()`.
+
+## `sanitizeEmail(input)`
+
+Masks an email address.
+
+```ts
+function sanitizeEmail(input: string): string;
+```
+
+Example:
+
+```ts
+sanitizeEmail("foo.bar@example.com");
+// "fo***@e***.com"
+```
+
+## `sanitizePhone(input)`
+
+Masks a phone number.
+
+```ts
+function sanitizePhone(input: string): string;
+```
+
+Example:
+
+```ts
+sanitizePhone("+13315553374");
+// "+133xxxx3374"
+```
+
+## `sanitizeErrorMessage(input)`
+
+Masks email addresses and phone numbers inside free-form text.
+
+```ts
+function sanitizeErrorMessage(input: string): string;
+```
+
+Example:
+
+```ts
+sanitizeErrorMessage("contact foo.bar@example.com or +13315553374");
+// "contact fo***@e***.com or +133xxxx3374"
+```
+
+## `PHOTON_OTEL_VERSION`
+
+Package version constant.
+
+```ts
+const PHOTON_OTEL_VERSION: string;
+```
+
+It is used as the instrumentation scope version for package-created tracers and loggers.

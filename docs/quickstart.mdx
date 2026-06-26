@@ -1,0 +1,158 @@
+---
+title: "Quickstart"
+description: "Install @photon-ai/otel, initialize telemetry, emit a log, create a span, and trace outbound fetch."
+---
+
+This quickstart takes you from an empty service file to traces and logs that can be exported through OTLP/HTTP.
+
+## 1. Install the package
+
+Use Bun:
+
+```bash
+bun add @photon-ai/otel
+```
+
+Or use npm:
+
+```bash
+npm install @photon-ai/otel
+```
+
+The package is ESM-only and supports Bun plus Node.js 20 or newer.
+
+## 2. Initialize OpenTelemetry once during startup
+
+Call `setupOtel()` before you create application loggers or run request-handling code.
+
+```ts
+import { setupOtel } from "@photon-ai/otel";
+
+const telemetry = setupOtel({
+  serviceName: "orders-api",
+  serviceVersion: "1.0.0",
+});
+```
+
+`serviceName` is required because OpenTelemetry backends group telemetry by `service.name`. `serviceVersion` is optional, but it is useful when investigating whether a deploy changed behavior.
+
+`setupOtel()` is idempotent. If another part of the process calls it again, the existing handle is returned instead of replacing the global providers.
+
+## 3. Export to a collector
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to send traces and logs to an OpenTelemetry Collector or vendor endpoint.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run src/server.ts
+```
+
+With that single base endpoint:
+
+- Traces go to `http://localhost:4318/v1/traces`.
+- Logs go to `http://localhost:4318/v1/logs`.
+
+If the variable is not set, `setupOtel()` still works. It installs providers without exporter processors, so local development does not need a collector.
+
+## 4. Create a logger
+
+Create a logger per module or subsystem.
+
+```ts
+import { createLogger } from "@photon-ai/otel";
+
+const log = createLogger("orders");
+
+log.info("received order", {
+  orderId: "ord_123",
+  customerTier: "pro",
+});
+```
+
+Each log call writes to two sinks:
+
+- An OpenTelemetry log record, using the active context for trace correlation.
+- A console line, using the matching console method for the severity.
+
+The console line is meant for local development and platform logs. The OpenTelemetry record is meant for structured search and correlation.
+
+## 5. Wrap important work in a span
+
+Use `withSpan()` around business operations that should appear as trace nodes.
+
+```ts
+import { withSpan } from "@photon-ai/otel";
+
+await withSpan(
+  "orders.create",
+  { "order.id": "ord_123", "customer.tier": "pro" },
+  async () => {
+    log.info("creating order");
+    await saveOrder();
+  }
+);
+```
+
+The helper starts an active span, awaits your callback, marks the span `OK` on success, and ends it in a `finally` block.
+
+If your callback throws, the span records the exception, sets `ERROR` status, sanitizes email addresses and phone numbers in the span status message, then rethrows the original error.
+
+## 6. Trace outbound fetch calls
+
+When a traces endpoint is configured, `setupOtel()` automatically instruments `globalThis.fetch`.
+
+```ts
+await withSpan("orders.enrich", async () => {
+  const response = await fetch("https://inventory.example.com/items/sku_123");
+  return response.json();
+});
+```
+
+That outbound request produces a client span named by HTTP method, such as `GET`, and injects W3C trace context headers into the request.
+
+The fetch span is parented to the active span when one exists. That lets downstream services continue the same distributed trace.
+
+## 7. Shut down on process exit
+
+Keep the handle returned by `setupOtel()` and flush it before the process exits.
+
+```ts
+process.on("SIGTERM", async () => {
+  await telemetry.shutdown();
+  process.exit(0);
+});
+```
+
+`shutdown()` unpatches fetch instrumentation and shuts down both the tracer provider and logger provider. This gives batch processors a chance to export buffered telemetry.
+
+## Complete example
+
+```ts
+import { createLogger, setupOtel, withSpan } from "@photon-ai/otel";
+
+const telemetry = setupOtel({
+  serviceName: "orders-api",
+  serviceVersion: "1.0.0",
+  resourceAttributes: {
+    "service.namespace": "commerce",
+  },
+});
+
+const log = createLogger("orders");
+
+await withSpan("orders.create", { "order.id": "ord_123" }, async () => {
+  log.info("creating order", { orderId: "ord_123" });
+  await fetch("https://inventory.example.com/items/sku_123");
+});
+
+await telemetry.shutdown();
+```
+
+## Common first-run checks
+
+If you do not see telemetry in your backend:
+
+1. Confirm `OTEL_EXPORTER_OTLP_ENDPOINT` points to an OTLP/HTTP endpoint, not a gRPC endpoint.
+2. Confirm your collector exposes `/v1/traces` and `/v1/logs`.
+3. Call `shutdown()` in scripts and tests so batch processors flush before exit.
+4. Check your `LOG_LEVEL`; logs below the active level are dropped from both OpenTelemetry and the console.
+5. Make sure `setupOtel()` runs before the code path you are testing.
