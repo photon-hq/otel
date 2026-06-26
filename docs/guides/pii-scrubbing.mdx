@@ -1,0 +1,146 @@
+---
+title: "PII scrubbing"
+description: "Use the sanitize helpers and understand where automatic scrubbing does and does not happen."
+---
+
+The package exports three helpers for masking common personally identifiable information:
+
+- `sanitizeEmail(input)`
+- `sanitizePhone(input)`
+- `sanitizeErrorMessage(input)`
+
+They are intentionally small and predictable. They are not a full data-loss-prevention system.
+
+## Email masking
+
+```ts
+import { sanitizeEmail } from "@photon-ai/otel";
+
+sanitizeEmail("foo.bar@example.com");
+// "fo***@e***.com"
+```
+
+The helper keeps:
+
+- the first two characters of the local part
+- the first character of the domain
+- the top-level domain
+
+Malformed values return `"***"`.
+
+## Phone masking
+
+```ts
+import { sanitizePhone } from "@photon-ai/otel";
+
+sanitizePhone("+13315553374");
+// "+133xxxx3374"
+```
+
+The helper keeps:
+
+- the leading `+`, when present
+- the first three digits
+- the last four digits
+
+Inputs with too few digits return `"xxxx"` or `"+xxxx"`.
+
+Formatting characters such as spaces, parentheses, periods, and dashes are ignored when calculating the masked output.
+
+## Free-form error messages
+
+Use `sanitizeErrorMessage()` for strings that may contain emails or phone numbers.
+
+```ts
+import { sanitizeErrorMessage } from "@photon-ai/otel";
+
+sanitizeErrorMessage("contact foo.bar@example.com or +13315553374");
+// "contact fo***@e***.com or +133xxxx3374"
+```
+
+It replaces every email and phone-like match in the string.
+
+## Where scrubbing happens automatically
+
+Automatic scrubbing is applied to span status messages in:
+
+- `withSpan()` when the wrapped callback throws
+- `instrumentFetch()` when the underlying fetch throws
+
+In both cases, the original error is still recorded as an exception event and rethrown where appropriate. The sanitized value is used for the span status message.
+
+## Where scrubbing does not happen automatically
+
+The package does not sanitize:
+
+- log messages
+- log attributes
+- logger exception attributes
+- span attributes
+- fetch `url.full`
+- response bodies
+- request bodies
+- headers
+
+That boundary is deliberate. Automatic broad scrubbing can hide useful debugging context, create surprising transformations, and still miss application-specific secrets. The package only scrubs the generic free-form error status path where accidental PII leakage is common and the value is usually not meant for exact matching.
+
+## Recommended logging pattern
+
+If an external provider returns a message that may contain PII, sanitize before logging it.
+
+```ts
+import { createLogger, sanitizeErrorMessage } from "@photon-ai/otel";
+
+const log = createLogger("provider.stripe");
+
+log.warn("provider declined request", {
+  safeProviderMessage: sanitizeErrorMessage(providerMessage),
+});
+```
+
+Do not put the raw provider message in another attribute unless you have verified it is safe.
+
+## Recommended span pattern
+
+Keep raw PII out of attributes.
+
+```ts
+await withSpan(
+  "customer.lookup",
+  {
+    "customer.id": customerId,
+    "lookup.source": "support-tool",
+  },
+  async () => {
+    await lookupCustomer(customerId);
+  }
+);
+```
+
+Prefer stable internal identifiers over emails or phone numbers.
+
+## URL safety
+
+Fetch spans include `url.full`, including query parameters.
+
+Avoid URLs like:
+
+```txt
+https://api.example.com/search?email=foo.bar@example.com
+```
+
+Prefer:
+
+```txt
+https://api.example.com/search
+```
+
+with the sensitive value in a request body or header that your telemetry pipeline does not record. If you cannot avoid sensitive query strings, configure fetch instrumentation to ignore those URLs.
+
+## Best practices
+
+- Treat the sanitize helpers as a last line of defense, not the primary privacy model.
+- Keep PII out of telemetry attributes whenever possible.
+- Sanitize external error messages before logging them.
+- Avoid secrets and PII in query strings.
+- Review telemetry schemas the same way you review API schemas.

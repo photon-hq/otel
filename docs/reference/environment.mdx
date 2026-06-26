@@ -1,0 +1,166 @@
+---
+title: "Environment reference"
+description: "Environment variables recognized by @photon-ai/otel and how they override code options."
+---
+
+This package follows standard OpenTelemetry environment variable precedence for OTLP exporter configuration.
+
+Environment variables are deployment-owned configuration. They override code defaults where applicable.
+
+## Summary
+
+| Variable | Purpose | Overrides |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP endpoint | `setupOtel({ endpoint })` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Full traces endpoint | base endpoint for traces |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Full logs endpoint | base endpoint for logs |
+| `OTEL_EXPORTER_OTLP_HEADERS` | OTLP exporter headers | conflicting `setupOtel({ headers })` values |
+| `DEPLOYMENT_ENV` | deployment resource attribute and default log-level input | default `development` |
+| `LOG_LEVEL` | logger minimum severity | `setupOtel({ logLevel })` and `setLogLevel()` |
+
+## `OTEL_EXPORTER_OTLP_ENDPOINT`
+
+Base OTLP/HTTP endpoint.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+The package derives:
+
+- traces: `http://localhost:4318/v1/traces`
+- logs: `http://localhost:4318/v1/logs`
+
+Trailing slash is removed before appending signal paths.
+
+## `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+
+Full traces endpoint.
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://otel.example.com/v1/traces
+```
+
+When set, this value is used exactly as provided for traces.
+
+It wins over `OTEL_EXPORTER_OTLP_ENDPOINT` and `setupOtel({ endpoint })` for the trace pipeline.
+
+## `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+
+Full logs endpoint.
+
+```bash
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://otel.example.com/v1/logs
+```
+
+When set, this value is used exactly as provided for logs.
+
+It wins over `OTEL_EXPORTER_OTLP_ENDPOINT` and `setupOtel({ endpoint })` for the log pipeline.
+
+## `OTEL_EXPORTER_OTLP_HEADERS`
+
+Comma-separated OTLP exporter headers.
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer token,x-tenant=acme"
+```
+
+Parsing rules:
+
+- pairs are separated by commas
+- the first `=` separates key from value
+- whitespace around keys and values is trimmed
+- malformed pairs are ignored
+- empty keys are ignored
+
+Environment headers are merged after `setupOtel({ headers })`, so environment values win on conflicts.
+
+## `DEPLOYMENT_ENV`
+
+Deployment environment name.
+
+```bash
+DEPLOYMENT_ENV=production
+```
+
+The value is attached to telemetry as `deployment.environment`.
+
+If unset, the package uses `development`.
+
+It also controls the default log level:
+
+- `development` or unset: `debug`
+- any other value: `info`
+
+## `LOG_LEVEL`
+
+Minimum logger severity.
+
+```bash
+LOG_LEVEL=warn
+```
+
+Allowed values:
+
+- `debug`
+- `info`
+- `warn`
+- `error`
+- `silent`
+
+Invalid values are ignored.
+
+`LOG_LEVEL` is checked on every log call and wins over both `setupOtel({ logLevel })` and `setLogLevel()`.
+
+## Local development example
+
+No collector required:
+
+```bash
+bun run src/server.ts
+```
+
+With a local collector:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run src/server.ts
+```
+
+Verbose logs:
+
+```bash
+LOG_LEVEL=debug OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run src/server.ts
+```
+
+## Production example
+
+```bash
+DEPLOYMENT_ENV=production
+OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${OTEL_TOKEN}"
+LOG_LEVEL=info
+```
+
+Keep secrets in your deployment system. Do not commit real OTLP credentials to source control.
+
+## Endpoint matrix
+
+| Environment | Code endpoint | Trace result | Log result |
+| --- | --- | --- | --- |
+| none | none | no trace exporter | no log exporter |
+| none | `http://localhost:4318` | `http://localhost:4318/v1/traces` | `http://localhost:4318/v1/logs` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.example.com` | anything | `https://otel.example.com/v1/traces` | `https://otel.example.com/v1/logs` |
+| signal-specific trace endpoint | base endpoint | exact trace env URL | base endpoint + `/v1/logs` |
+| signal-specific log endpoint | base endpoint | base endpoint + `/v1/traces` | exact log env URL |
+
+## Fetch instrumentation interaction
+
+`setupOtel()` enables fetch instrumentation by default when the trace pipeline has an endpoint.
+
+That means any of these can enable automatic fetch spans:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT`
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+- `setupOtel({ endpoint })`
+
+Use `instrumentFetch: false` to opt out.

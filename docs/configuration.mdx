@@ -1,0 +1,227 @@
+---
+title: "Configuration"
+description: "Configure service identity, OTLP endpoints, headers, resource attributes, fetch instrumentation, and log levels."
+---
+
+`setupOtel()` accepts code-level defaults, while standard OpenTelemetry environment variables keep final control in deployment environments.
+
+That split is intentional:
+
+- Application code owns stable identity like `serviceName`.
+- Deployment configuration owns destinations, credentials, and runtime log level.
+
+## Basic options
+
+```ts
+import { setupOtel } from "@photon-ai/otel";
+
+setupOtel({
+  serviceName: "orders-api",
+  serviceVersion: "1.0.0",
+  endpoint: "https://otel.example.com",
+  headers: {
+    Authorization: "Bearer local-dev-token",
+  },
+  resourceAttributes: {
+    "service.namespace": "commerce",
+  },
+  logLevel: "info",
+});
+```
+
+## `serviceName`
+
+`serviceName` is required.
+
+It becomes the OpenTelemetry resource attribute `service.name`, which is the primary identity most observability backends use for filtering, grouping, and service maps.
+
+Choose a stable name that matches the deployable service, not a host, pod, route, or team name.
+
+Good examples:
+
+- `orders-api`
+- `billing-worker`
+- `webhooks-consumer`
+
+Avoid names that change per environment, such as `orders-api-prod`. Use `DEPLOYMENT_ENV` for environment identity instead.
+
+## `serviceVersion`
+
+`serviceVersion` is optional and becomes `service.version`.
+
+Set it to the package version, commit SHA, image tag, or release version. It helps answer questions like "did the error rate change after this deploy?"
+
+## `endpoint`
+
+`endpoint` is a code-level default for the OTLP/HTTP base URL.
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+});
+```
+
+The package appends signal paths:
+
+- Traces: `/v1/traces`
+- Logs: `/v1/logs`
+
+`endpoint` is ignored when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+
+## Signal-specific endpoints
+
+Use signal-specific environment variables when traces and logs need different destinations.
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://otel.example.com/v1/traces
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://logs.example.com/v1/logs
+```
+
+These are full URLs. The package does not append `/v1/traces` or `/v1/logs` to signal-specific variables.
+
+## Headers
+
+Headers can be provided in code:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  headers: {
+    Authorization: "Bearer dev-token",
+  },
+});
+```
+
+They can also be provided through `OTEL_EXPORTER_OTLP_HEADERS`:
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer prod-token,x-tenant=acme"
+```
+
+Environment headers are merged over code headers. If the same header exists in both places, the environment value wins.
+
+This lets code include harmless local defaults while production injects real credentials outside the repository.
+
+## Resource attributes
+
+`resourceAttributes` adds attributes to every span and log record.
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  resourceAttributes: {
+    "service.namespace": "commerce",
+    "deployment.region": "us-east-1",
+  },
+});
+```
+
+Use resource attributes for facts that describe the process as a whole.
+
+Good resource attributes:
+
+- service namespace
+- region
+- cluster
+- runtime name
+- static tenant for single-tenant deployments
+
+Avoid putting per-request values in resource attributes. Use span attributes or log attributes for request-specific data.
+
+## Deployment environment
+
+`DEPLOYMENT_ENV` is attached as the resource attribute `deployment.environment`.
+
+If unset, it defaults to `development`.
+
+It also affects the default log level:
+
+- `debug` when `DEPLOYMENT_ENV` is unset or `development`
+- `info` in every other environment
+
+## Log level
+
+You can set a code default:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  logLevel: "warn",
+});
+```
+
+Or set `LOG_LEVEL`:
+
+```bash
+LOG_LEVEL=warn
+```
+
+`LOG_LEVEL` wins over `setupOtel({ logLevel })` and `setLogLevel()`.
+
+Allowed values are:
+
+- `debug`
+- `info`
+- `warn`
+- `error`
+- `silent`
+
+`silent` suppresses all logs, including errors.
+
+## Fetch instrumentation
+
+By default, `setupOtel()` instruments `fetch` when a traces endpoint is configured.
+
+You can disable it:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: false,
+});
+```
+
+You can force it on even without an exporter endpoint:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  instrumentFetch: true,
+});
+```
+
+You can also filter specific URLs:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: {
+    ignore: (url) => url.includes("/healthz"),
+  },
+});
+```
+
+The package always excludes its own OTLP trace and log exporter endpoints from fetch instrumentation. That prevents exporter traffic from recursively tracing itself.
+
+## Environment variable precedence
+
+| Configuration | Highest priority | Lower priority |
+| --- | --- | --- |
+| Base OTLP endpoint | `OTEL_EXPORTER_OTLP_ENDPOINT` | `setupOtel({ endpoint })` |
+| Trace endpoint | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | base endpoint + `/v1/traces` |
+| Log endpoint | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | base endpoint + `/v1/logs` |
+| OTLP headers | `OTEL_EXPORTER_OTLP_HEADERS` | `setupOtel({ headers })` |
+| Log level | `LOG_LEVEL` | `setupOtel({ logLevel })` or `setLogLevel()` |
+| Deployment environment | `DEPLOYMENT_ENV` | `development` |
+
+## Best practices
+
+- Keep collector endpoints and credentials in environment variables.
+- Always set `serviceName`.
+- Set `serviceVersion` from your release artifact when possible.
+- Prefer stable resource attributes over high-cardinality request values.
+- Use `LOG_LEVEL=debug` temporarily when debugging production incidents, then return to `info` or higher.
+- Avoid putting secrets in URL query strings because fetch spans include `url.full`.

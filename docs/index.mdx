@@ -1,0 +1,96 @@
+---
+title: "Overview"
+description: "Developer documentation for @photon-ai/otel, a small OpenTelemetry wrapper for Bun and Node.js."
+---
+
+`@photon-ai/otel` is a DX-focused OpenTelemetry wrapper for Bun and Node.js services.
+
+It keeps the public API intentionally small:
+
+- `setupOtel()` boots traces and logs with OTLP/HTTP exporters.
+- `createLogger(module)` emits structured logs to OpenTelemetry and the console.
+- `withSpan(name, attrs, fn)` wraps sync or async work in a span.
+- `instrumentFetch()` patches `globalThis.fetch` for outbound client spans and W3C trace propagation.
+- `sanitizeEmail()`, `sanitizePhone()`, and `sanitizeErrorMessage()` mask common PII before it reaches selected telemetry fields.
+
+The package is designed for teams that want useful telemetry without repeating verbose OpenTelemetry SDK setup in every service.
+
+## What problem it solves
+
+Vanilla OpenTelemetry is flexible, but a small service usually needs to answer the same questions before it can emit anything useful:
+
+- Which tracer provider and logger provider should be installed?
+- Which OTLP exporter URLs should be used?
+- How do resource attributes like `service.name` and `deployment.environment` get attached?
+- How should logs be correlated with the active trace?
+- How do outbound `fetch` calls carry `traceparent` downstream?
+- What should happen locally when no collector endpoint is configured?
+
+`@photon-ai/otel` answers those questions with conservative defaults while still exposing the important escape hatches.
+
+## Runtime and transport model
+
+The package supports Bun and Node.js 20 or newer.
+
+It uses OTLP over HTTP only. When you provide `endpoint: "https://otel.example.com"` or set `OTEL_EXPORTER_OTLP_ENDPOINT`, traces are sent to `/v1/traces` and logs are sent to `/v1/logs`. Signal-specific environment variables can override those paths.
+
+If no endpoint is configured, setup still succeeds. Providers are installed, but exporters are effectively no-ops because no trace or log processor is configured. That behavior makes local development zero-config.
+
+## Mental model
+
+Think of the package in four layers:
+
+1. `setupOtel()` installs the global OpenTelemetry runtime pieces: context manager, propagator, tracer provider, and logger provider.
+2. `withSpan()` uses the global tracer provider to create application spans.
+3. `createLogger()` uses the global logger provider and active context so logs inside spans carry trace correlation.
+4. `instrumentFetch()` wraps outbound `fetch` so downstream services receive W3C trace context.
+
+Those layers are independent enough to test directly, but they are meant to be used together in service startup code.
+
+## Install
+
+```bash
+bun add @photon-ai/otel
+```
+
+```bash
+npm install @photon-ai/otel
+```
+
+## Minimal service setup
+
+```ts
+import { createLogger, setupOtel, withSpan } from "@photon-ai/otel";
+
+const otel = setupOtel({
+  serviceName: "billing-api",
+  serviceVersion: "1.0.0",
+});
+
+const log = createLogger("startup");
+
+await withSpan("boot", async () => {
+  log.info("service ready");
+});
+
+process.on("SIGTERM", async () => {
+  await otel.shutdown();
+  process.exit(0);
+});
+```
+
+This example works without an OTLP collector. Add an endpoint when you are ready to export telemetry:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run src/server.ts
+```
+
+## Recommended reading path
+
+Start with [Quickstart](/quickstart), then read [Configuration](/configuration). After that:
+
+- Use [Setup](/guides/setup) when wiring a real service.
+- Use [Logging](/guides/logging) when deciding module names, log levels, and exception handling.
+- Use [Spans](/guides/spans) when wrapping business operations.
+- Use [Fetch instrumentation](/guides/fetch-instrumentation) when tracing outbound HTTP.
+- Use [Architecture](/concepts/architecture) for the deeper design decisions.

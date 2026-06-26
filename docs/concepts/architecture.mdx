@@ -1,0 +1,176 @@
+---
+title: "Architecture"
+description: "Understand the design decisions behind @photon-ai/otel and how the package maps to OpenTelemetry SDK primitives."
+---
+
+`@photon-ai/otel` is a thin opinionated layer over OpenTelemetry SDK primitives.
+
+It does not invent a telemetry model. It chooses a small set of defaults that make traces, logs, correlation, and outbound propagation work consistently in Bun and Node.js.
+
+## Public surface
+
+The package exports one entry point with these groups:
+
+- setup: `setupOtel()`, `isOtelActive()`
+- logging: `createLogger()`, `setLogLevel()`, `getLogLevel()`
+- tracing helper: `withSpan()`
+- fetch instrumentation: `instrumentFetch()`
+- sanitizers: `sanitizeEmail()`, `sanitizePhone()`, `sanitizeErrorMessage()`
+- version constant: `PHOTON_OTEL_VERSION`
+
+Keeping this surface small is a design choice. Most service code should not need to know which OpenTelemetry provider, processor, exporter, or propagator class to instantiate.
+
+## Setup layer
+
+`setupOtel()` owns process-level OpenTelemetry initialization.
+
+It creates a resource, installs context propagation, configures trace and log providers, and optionally patches fetch.
+
+The important OpenTelemetry primitives are:
+
+- `AsyncLocalStorageContextManager`
+- `CompositePropagator`
+- `W3CTraceContextPropagator`
+- `W3CBaggagePropagator`
+- `BasicTracerProvider`
+- `BatchSpanProcessor`
+- `OTLPTraceExporter`
+- `LoggerProvider`
+- `BatchLogRecordProcessor`
+- `OTLPLogExporter`
+
+This gives the package one predictable runtime path instead of exposing every OpenTelemetry SDK choice to each service.
+
+## Why global providers are used
+
+OpenTelemetry JavaScript APIs use global providers for trace and log lookup.
+
+`withSpan()` calls `trace.getTracer(...)`.
+
+`createLogger()` calls `logs.getLogger(...)`.
+
+Both depend on global providers installed by setup. This is why setup should run before application work starts.
+
+## Why setup is idempotent
+
+Global providers are shared process state.
+
+If two modules tried to install different providers, the process could produce partial correlation, duplicate exports, or surprising behavior depending on import order.
+
+The package avoids this by making setup idempotent:
+
+- first call installs providers and stores a handle
+- later calls return the same handle
+- `shutdown()` clears the active handle
+
+That makes repeated setup calls safe in tests, CLIs, and shared bootstrap utilities.
+
+## Why OTLP/HTTP only
+
+The implementation uses OTLP over HTTP for traces and logs.
+
+Reasons:
+
+- It works across Bun and Node.js.
+- It keeps the dependency surface smaller than supporting both HTTP and gRPC.
+- It is easier to debug with collector logs, curl, and packet inspection.
+- It maps naturally to common OpenTelemetry Collector defaults on port `4318`.
+
+The package is opinionated here. If a service needs custom exporters or gRPC transport, it can instantiate OpenTelemetry SDK pieces directly.
+
+## Why no endpoint is allowed
+
+Local development should not require infrastructure.
+
+When no endpoint is configured, the package still installs providers but uses empty processor lists. Application code can call `withSpan()` and `createLogger()` without branching on environment.
+
+This design means the same code path runs locally and in production. The deployment environment decides whether telemetry is exported.
+
+## Why environment variables win
+
+Standard OpenTelemetry environment variables override code-level options.
+
+This follows OpenTelemetry configuration expectations and keeps deployment concerns outside application code.
+
+For example:
+
+- production can inject real exporter credentials through `OTEL_EXPORTER_OTLP_HEADERS`
+- staging can point to a different collector through `OTEL_EXPORTER_OTLP_ENDPOINT`
+- incident response can raise or lower `LOG_LEVEL` without a code deploy
+
+## Logging architecture
+
+The logger emits to OpenTelemetry and the console from one call.
+
+This deliberately avoids choosing between local developer ergonomics and structured telemetry.
+
+The log-level gate runs before both sinks. A suppressed debug message does not reach OpenTelemetry and does not reach the console.
+
+The logger resolves the active level on each call so environment or programmatic changes take effect immediately.
+
+## Span helper architecture
+
+`withSpan()` wraps `tracer.startActiveSpan()`.
+
+It standardizes behavior that service code otherwise repeats:
+
+- set provided attributes
+- await sync or async callbacks
+- mark success as `OK`
+- record exceptions
+- sanitize error status messages
+- end spans reliably
+- rethrow original errors
+
+The helper is intentionally small. It does not implement retries, sampling, naming conventions, or attribute schemas. Those remain application decisions.
+
+## Fetch instrumentation architecture
+
+The fetch wrapper handles outbound requests directly at `globalThis.fetch`.
+
+That is necessary for Bun because diagnostics-channel-based HTTP instrumentation does not observe Bun-native fetch calls.
+
+The wrapper:
+
+- creates client spans
+- injects trace context through headers
+- records status codes
+- marks HTTP error responses as `ERROR`
+- records thrown network errors
+- preserves fetch request semantics
+- guards against double wrapping
+- can restore the original fetch
+
+## Privacy architecture
+
+The package has targeted PII scrubbing, not universal telemetry redaction.
+
+It scrubs free-form error messages before using them as span status messages. It also exports helpers for application code to use directly.
+
+It does not mutate arbitrary attributes, logs, URLs, bodies, or headers. Those values are too application-specific to transform safely without surprising users or hiding important data.
+
+## Design tradeoffs
+
+| Decision | Benefit | Tradeoff |
+| --- | --- | --- |
+| OTLP/HTTP only | portable and simple | no built-in gRPC exporter |
+| idempotent setup | safe repeated calls | first setup call wins |
+| console plus OTel logs | good local and production ergonomics | every emitted log goes to both sinks |
+| fetch wrapper | works in Bun and Node | patches a global function |
+| targeted scrubbing | predictable privacy behavior | application must still avoid logging sensitive data |
+| no endpoint no-op exporters | zero-config local development | local spans/logs are not exported unless endpoint is set |
+
+## Extension points
+
+Use the package for common service telemetry.
+
+Drop down to OpenTelemetry SDK primitives when you need:
+
+- custom span processors
+- custom exporters
+- custom sampling
+- non-HTTP OTLP transport
+- inbound framework auto-instrumentation
+- application-specific redaction pipelines
+
+The wrapper is meant to remove repetitive setup, not prevent direct OpenTelemetry usage.

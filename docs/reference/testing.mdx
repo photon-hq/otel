@@ -1,0 +1,155 @@
+---
+title: "Testing reference"
+description: "Run unit tests, integration tests, build checks, and local collector verification for @photon-ai/otel."
+---
+
+The repository uses Bun, Vitest, tsup, Ultracite, and an optional OpenTelemetry Collector integration test.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `bun run test` | run unit tests, excluding collector integration |
+| `bun run test:integration` | run integration tests against a live collector |
+| `bun run build` | build the ESM package and declarations |
+| `bun x ultracite check` | run formatting and lint checks |
+| `bun x ultracite fix` | auto-fix formatting and lint issues |
+
+## Unit tests
+
+Run:
+
+```bash
+bun run test
+```
+
+The unit suite covers:
+
+- setup idempotency and shutdown state
+- no-endpoint setup behavior
+- fetch auto-instrumentation toggles
+- logger attributes, severity, console output, and log-level gating
+- span success and failure behavior
+- PII sanitization helpers
+- fetch instrumentation spans, propagation, request preservation, ignore rules, double-wrap protection, and unpatching
+
+The integration suite is excluded from the default unit run because it needs Docker and a live collector.
+
+## Build
+
+Run:
+
+```bash
+bun run build
+```
+
+The build uses `tsup` with:
+
+- entry point `src/index.ts`
+- ESM output
+- TypeScript declarations
+- source maps
+- output directory `dist`
+- target `es2022`
+
+## Code quality
+
+Run:
+
+```bash
+bun x ultracite check
+```
+
+Use the fix command before committing code changes:
+
+```bash
+bun x ultracite fix
+```
+
+Ultracite is backed by Biome and enforces the repository's formatting and lint rules.
+
+## Integration test purpose
+
+The integration test drives the public API against a real OpenTelemetry Collector over OTLP/HTTP.
+
+It verifies the path unit tests cannot fully prove:
+
+- endpoint resolution
+- batch processor flushing through `shutdown()`
+- trace export over HTTP
+- log export over HTTP
+- collector parsing
+- resource attributes
+- span attributes and statuses
+- log severity and attributes
+- trace/log correlation
+- fetch client spans
+- PII-scrubbed span status messages
+
+## Run integration tests locally
+
+From the integration directory:
+
+```bash
+cd tests/integration
+mkdir -p output
+docker compose up -d
+```
+
+Wait for the collector:
+
+```bash
+curl -sf http://localhost:13133/ >/dev/null && echo healthy
+```
+
+From the repository root:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run test:integration
+```
+
+The test defaults to `http://localhost:4318` when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, but setting it explicitly makes the path clear.
+
+## Collector output
+
+The collector writes telemetry to:
+
+- `tests/integration/output/traces.json`
+- `tests/integration/output/logs.json`
+
+Each test run tags telemetry with a nonce so assertions match only the current run, even if output files contain previous data.
+
+## Shut down the collector
+
+From `tests/integration`:
+
+```bash
+docker compose down -v
+```
+
+## Testing your own service integration
+
+When adding `@photon-ai/otel` to a service, test at three levels:
+
+1. Start the service with no endpoint and confirm it runs without collector infrastructure.
+2. Start with `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` and a local collector.
+3. Trigger a real code path that emits a span, log, and outbound fetch.
+
+Then verify:
+
+- the service resource has the expected `service.name`
+- logs inside spans share the trace ID
+- outbound fetch spans have the expected parent span
+- `shutdown()` flushes telemetry before process exit in scripts and tests
+- sensitive values do not appear in attributes or URLs
+
+## Common failures
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| No telemetry exported | endpoint not configured | set `OTEL_EXPORTER_OTLP_ENDPOINT` or signal-specific endpoints |
+| Logs missing but spans exist | log endpoint missing or `LOG_LEVEL` too high | configure logs endpoint and inspect `LOG_LEVEL` |
+| Fetch spans missing | no traces endpoint or `instrumentFetch: false` | configure trace endpoint or force `instrumentFetch: true` |
+| Logs not correlated with traces | setup ran too late or context was replaced | call `setupOtel()` before work begins |
+| Process exits before telemetry appears | batch processors did not flush | await `shutdown()` |
+| Sensitive query values visible | fetch spans record `url.full` | remove sensitive query strings or ignore those URLs |

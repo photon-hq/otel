@@ -1,0 +1,191 @@
+---
+title: "Logging"
+description: "Use createLogger for structured OpenTelemetry logs, console output, levels, attributes, and exceptions."
+---
+
+`createLogger(module)` returns a small structured logger for one module or subsystem.
+
+```ts
+import { createLogger } from "@photon-ai/otel";
+
+const log = createLogger("checkout");
+
+log.info("checkout started", {
+  cartId: "cart_123",
+  itemCount: 3,
+});
+```
+
+## Logger shape
+
+Every level has the same signature:
+
+```ts
+log.debug(message, attrs, error);
+log.info(message, attrs, error);
+log.warn(message, attrs, error);
+log.error(message, attrs, error);
+```
+
+`attrs` is optional and accepts strings, numbers, booleans, and `undefined`.
+
+`undefined` attributes are dropped before the log record is emitted.
+
+```ts
+log.info("customer lookup finished", {
+  customerId: "cus_123",
+  cacheHit: true,
+  optionalValue: undefined,
+});
+```
+
+The emitted attributes include:
+
+- `log.module` from the logger module name
+- every defined user attribute
+- exception attributes when an error is passed
+
+## OpenTelemetry and console output
+
+Each log call emits to OpenTelemetry and to the console.
+
+For OpenTelemetry, the logger calls the global logger provider and attaches the active OpenTelemetry context. That is what allows logs inside `withSpan()` to share the trace ID with the active span.
+
+For console output, it prints:
+
+```txt
+[checkout] INFO checkout started { cartId: "cart_123", itemCount: 3 }
+```
+
+The console method matches severity:
+
+- `debug` uses `console.debug`
+- `info` uses `console.info`
+- `warn` uses `console.warn`
+- `error` uses `console.error`
+
+Both sinks share the same log-level gate.
+
+## Error handling
+
+Pass the error as the third argument on any level.
+
+```ts
+try {
+  await chargeCard();
+} catch (error) {
+  log.warn("card charge failed, retrying", { attempt: 1 }, error);
+}
+```
+
+If the value is an `Error`, the log record includes:
+
+- `exception.type`
+- `exception.message`
+- `exception.stacktrace`, when available
+
+If the value is not an `Error`, the logger still preserves it:
+
+- `exception.type` is `typeof error`
+- `exception.message` is `String(error)`
+
+This matters because JavaScript allows throwing strings, plain objects, and other values. The logger avoids silently dropping those failures.
+
+## Log levels
+
+The active level is resolved fresh on every log call.
+
+Resolution order:
+
+1. `LOG_LEVEL`
+2. `setLogLevel()` or `setupOtel({ logLevel })`
+3. default level from `DEPLOYMENT_ENV`
+
+```ts
+import { getLogLevel, setLogLevel } from "@photon-ai/otel";
+
+setLogLevel("warn");
+console.log(getLogLevel()); // "warn", unless LOG_LEVEL is set
+```
+
+Defaults:
+
+- `debug` when `DEPLOYMENT_ENV` is unset or `development`
+- `info` otherwise
+
+Allowed values:
+
+- `debug`
+- `info`
+- `warn`
+- `error`
+- `silent`
+
+Logs below the active level are dropped from both OpenTelemetry and the console.
+
+## Choosing module names
+
+Use short, stable names that describe ownership.
+
+Good examples:
+
+- `auth`
+- `checkout`
+- `billing.worker`
+- `webhooks.stripe`
+
+Avoid request IDs, tenant IDs, or dynamically generated names. Put those in attributes instead.
+
+## Attribute best practices
+
+Use attributes for values you want to filter or group by.
+
+Good log attributes:
+
+- `requestId`
+- `orderId`
+- `customerTier`
+- `attempt`
+- `queueName`
+- `provider`
+
+Be careful with high-cardinality or sensitive values:
+
+- raw email addresses
+- phone numbers
+- full URLs with tokens
+- request bodies
+- auth headers
+
+The logger does not sanitize arbitrary log attributes or exception messages. PII scrubbing is applied by `withSpan()` and `instrumentFetch()` to span status messages, and the sanitize helpers are exported for your own use.
+
+If a value might contain PII, sanitize it before logging.
+
+```ts
+import { sanitizeErrorMessage } from "@photon-ai/otel";
+
+log.error("provider rejected request", {
+  safeMessage: sanitizeErrorMessage(String(providerMessage)),
+});
+```
+
+## Logging inside spans
+
+Logs emitted inside `withSpan()` receive the active context.
+
+```ts
+await withSpan("checkout.submit", { cartId: "cart_123" }, async () => {
+  log.info("submitting checkout", { cartId: "cart_123" });
+});
+```
+
+In a backend that supports trace/log correlation, that log can be opened from the trace and the trace can be opened from the log.
+
+## Best practices
+
+- Create loggers once at module scope.
+- Use stable module names.
+- Attach attributes for business identifiers and operational context.
+- Pass exceptions as the third argument instead of stringifying them.
+- Set `LOG_LEVEL` in deployment configuration.
+- Avoid logging raw PII, secrets, or full request bodies.
