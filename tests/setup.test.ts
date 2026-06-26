@@ -59,4 +59,30 @@ describe("setupOtel", () => {
     });
     expect(handle).toBeDefined();
   });
+
+  it("auto-instruments fetch when a traces endpoint is configured", async () => {
+    const original = globalThis.fetch;
+    try {
+      const handle = setupOtel({
+        serviceName: "fetch-on",
+        endpoint: "https://otel.example.com",
+      });
+      expect(globalThis.fetch).not.toBe(original);
+      await handle.shutdown();
+      expect(globalThis.fetch).toBe(original);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("does not instrument fetch when no endpoint is configured", async () => {
+    const original = globalThis.fetch;
+    try {
+      const handle = setupOtel({ serviceName: "fetch-off" });
+      expect(globalThis.fetch).toBe(original);
+      await handle.shutdown();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

@@ -47,8 +47,12 @@ jobs:
           echo "collector did not become healthy in time"
           exit 1
 
+      # `--bun` forces vitest onto the Bun runtime; plain `bun run` would honor
+      # vitest's `#!/usr/bin/env node` shebang and silently run under Node,
+      # making this leg identical to the node leg (and never exercising Bun's
+      # native fetch instrumentation).
       - if: matrix.runtime == 'bun'
-        run: bun run test:integration
+        run: bun --bun run test:integration
         env:
           OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
 

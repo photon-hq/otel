@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -35,6 +37,8 @@ const logsFile = join(outputDir, "logs.json");
 const nonce = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 const happySpanName = `integration-happy-${nonce}`;
 const errorSpanName = `integration-error-${nonce}`;
+const fetchParentSpanName = `integration-fetch-parent-${nonce}`;
+const fetchMarker = `integration-fetch-${nonce}`;
 const rawEmail = "user@example.com";
 
 // --- OTLP/JSON shapes emitted by the collector's file exporter ---------------
@@ -59,6 +63,7 @@ interface OtlpStatus {
 interface OtlpSpan {
   attributes?: OtlpAttr[];
   name?: string;
+  parentSpanId?: string;
   spanId?: string;
   status?: OtlpStatus;
   traceId?: string;
@@ -90,7 +95,9 @@ type AttrMap = Record<string, string | number | boolean>;
 interface CollectedSpan {
   attributes: AttrMap;
   name: string;
+  parentSpanId: string;
   resource: AttrMap;
+  spanId: string;
   status: OtlpStatus;
   traceId: string;
 }
@@ -162,6 +169,8 @@ function readSpans(): CollectedSpan[] {
           spans.push({
             name: span.name ?? "",
             traceId: span.traceId ?? "",
+            spanId: span.spanId ?? "",
+            parentSpanId: span.parentSpanId ?? "",
             attributes: attrsToMap(span.attributes),
             status: span.status ?? {},
             resource,
@@ -266,6 +275,26 @@ beforeAll(async () => {
   // Standalone error log carrying exception.* attributes.
   log.error("integration error log", { code: "E_TEST" }, new Error("boom"));
 
+  // Outbound fetch: setupOtel auto-instruments globalThis.fetch, so this emits
+  // a CLIENT span parented to the active span. A local server is the target so
+  // the test never touches the network; the nonce in the path makes the span
+  // identifiable by `url.full`.
+  const target = createServer((_req, res) => {
+    res.statusCode = 200;
+    res.end("ok");
+  });
+  await new Promise<void>((resolve) => {
+    target.listen(0, "127.0.0.1", () => resolve());
+  });
+  const { port } = target.address() as AddressInfo;
+  await withSpan(fetchParentSpanName, async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/${fetchMarker}`);
+    await res.text();
+  });
+  await new Promise<void>((resolve) => {
+    target.close(() => resolve());
+  });
+
   // Flush the batch processors over the wire before reading the collector files.
   await handle.shutdown();
 
@@ -273,7 +302,10 @@ beforeAll(async () => {
     readSpans,
     (items) =>
       items.some((s) => s.name === happySpanName) &&
-      items.some((s) => s.name === errorSpanName)
+      items.some((s) => s.name === errorSpanName) &&
+      items.some((s) =>
+        String(s.attributes["url.full"] ?? "").includes(fetchMarker)
+      )
   );
   logRecords = await pollUntil(
     readLogs,
@@ -333,5 +365,29 @@ describe("real OTLP/HTTP round-trip to an OpenTelemetry Collector", () => {
     const record = logRecords.find((r) => r.body === "hello from integration");
     expect(span?.traceId).toBeTruthy();
     expect(record?.traceId).toBe(span?.traceId);
+  });
+
+  it("delivers an auto-instrumented fetch CLIENT span with HTTP attributes", () => {
+    const span = spans.find((s) =>
+      String(s.attributes["url.full"] ?? "").includes(fetchMarker)
+    );
+    expect(span).toBeDefined();
+    expect(span?.name).toBe("GET");
+    expect(span?.attributes["http.request.method"]).toBe("GET");
+    expect(span?.attributes["server.address"]).toBe("127.0.0.1");
+    expect(span?.attributes["http.response.status_code"]).toBe(200);
+    expect(isOkStatus(span?.status)).toBe(true);
+    expect(span?.resource["service.name"]).toBe(SERVICE_NAME);
+    expect(span?.resource["test.nonce"]).toBe(nonce);
+  });
+
+  it("parents the fetch span under the active span (shared trace + parent id)", () => {
+    const parent = spans.find((s) => s.name === fetchParentSpanName);
+    const fetchSpan = spans.find((s) =>
+      String(s.attributes["url.full"] ?? "").includes(fetchMarker)
+    );
+    expect(parent?.spanId).toBeTruthy();
+    expect(fetchSpan?.traceId).toBe(parent?.traceId);
+    expect(fetchSpan?.parentSpanId).toBe(parent?.spanId);
   });
 });

@@ -1,6 +1,11 @@
-import { context, trace } from "@opentelemetry/api";
+import { context, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import {
+  CompositePropagator,
+  W3CBaggagePropagator,
+  W3CTraceContextPropagator,
+} from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
@@ -12,6 +17,11 @@ import {
   BasicTracerProvider,
   BatchSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import {
+  type FetchInstrumentation,
+  type InstrumentFetchOptions,
+  instrumentFetch,
+} from "./instrument-fetch";
 import { type LogLevel, setLogLevel } from "./logger";
 
 export interface SetupOtelOptions {
@@ -27,6 +37,17 @@ export interface SetupOtelOptions {
    * conflicts.
    */
   headers?: Record<string, string>;
+  /**
+   * Auto-instrument outbound `globalThis.fetch` with CLIENT spans and W3C
+   * trace-context propagation. On Bun this is the only fetch instrumentation
+   * that works (diagnostics_channel-based instrumentations emit nothing on
+   * Bun's native fetch); it works identically on Node.
+   *
+   * `true` enables with defaults; pass an object to filter URLs via `ignore`.
+   * Defaults to enabled when a traces endpoint is configured. Pass `false` to
+   * disable.
+   */
+  instrumentFetch?: boolean | InstrumentFetchOptions;
   /**
    * Minimum log level emitted by `createLogger()` (to both OTLP and console).
    * The `LOG_LEVEL` env var still takes precedence. Defaults to `debug` in
@@ -89,6 +110,49 @@ function resolveLogsEndpoint(base: string | undefined): string | undefined {
   return generic ? `${generic.replace(TRAILING_SLASH, "")}/v1/logs` : undefined;
 }
 
+function otlpOriginsOf(
+  tracesEndpoint: string | undefined,
+  logsEndpoint: string | undefined
+): string[] {
+  const origins: string[] = [];
+  for (const endpoint of [tracesEndpoint, logsEndpoint]) {
+    if (!endpoint) {
+      continue;
+    }
+    try {
+      origins.push(new URL(endpoint).origin);
+    } catch {
+      // Ignore malformed endpoint URLs — nothing to exclude.
+    }
+  }
+  return origins;
+}
+
+/**
+ * Patch `globalThis.fetch` unless disabled. Defaults to on when a traces
+ * pipeline is configured. Always excludes our own OTLP endpoints so the
+ * exporter's traffic is never self-traced (matters on Node, where the OTLP
+ * exporter can use fetch).
+ */
+function startFetchInstrumentation(
+  option: boolean | InstrumentFetchOptions | undefined,
+  hasTraces: boolean,
+  tracesEndpoint: string | undefined,
+  logsEndpoint: string | undefined
+): FetchInstrumentation | undefined {
+  const want = option ?? hasTraces;
+  if (!want) {
+    return;
+  }
+  const userOptions = typeof option === "object" ? option : undefined;
+  const otlpOrigins = otlpOriginsOf(tracesEndpoint, logsEndpoint);
+  return instrumentFetch({
+    ignore: (url) =>
+      otlpOrigins.some((origin) => url.startsWith(origin)) ||
+      (userOptions?.ignore?.(url) ?? false),
+  });
+}
+
 /**
  * Boot an OTLP/HTTP-based OpenTelemetry pipeline (traces + logs).
  *
@@ -126,6 +190,14 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
   });
 
   context.setGlobalContextManager(new AsyncLocalStorageContextManager());
+  propagation.setGlobalPropagator(
+    new CompositePropagator({
+      propagators: [
+        new W3CTraceContextPropagator(),
+        new W3CBaggagePropagator(),
+      ],
+    })
+  );
 
   const traceProcessors = tracesEndpoint
     ? [
@@ -143,6 +215,13 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
     spanProcessors: traceProcessors,
   });
   trace.setGlobalTracerProvider(tracerProvider);
+
+  const fetchInstrumentation = startFetchInstrumentation(
+    options.instrumentFetch,
+    traceProcessors.length > 0,
+    tracesEndpoint,
+    logsEndpoint
+  );
 
   const logProcessors = logsEndpoint
     ? [
@@ -163,6 +242,7 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
 
   const handle: OtelHandle = {
     async shutdown() {
+      fetchInstrumentation?.unpatch();
       await Promise.allSettled([
         tracerProvider.shutdown(),
         loggerProvider.shutdown(),
