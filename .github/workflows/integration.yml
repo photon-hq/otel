@@ -1,0 +1,80 @@
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    # Blacksmith runners are a drop-in for GitHub-hosted runners (Docker is
+    # available, so the docker compose collector step works unchanged).
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: bun
+          - runtime: node
+            node-version: "22"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      - if: matrix.runtime == 'node'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: bun install --frozen-lockfile
+
+      - name: Start OTel Collector
+        working-directory: tests/integration
+        run: |
+          mkdir -p output
+          docker compose up -d
+
+      - name: Wait for collector health
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:13133/ >/dev/null; then
+              echo "collector healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "collector did not become healthy in time"
+          exit 1
+
+      # `--bun` forces vitest onto the Bun runtime; plain `bun run` would honor
+      # vitest's `#!/usr/bin/env node` shebang and silently run under Node,
+      # making this leg identical to the node leg (and never exercising Bun's
+      # native fetch instrumentation).
+      - if: matrix.runtime == 'bun'
+        run: bun --bun run test:integration
+        env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+
+      - if: matrix.runtime == 'node'
+        run: node ./node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts
+        env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+
+      - if: ${{ failure() }}
+        name: Dump collector logs and received telemetry
+        working-directory: tests/integration
+        run: |
+          echo "===== collector logs ====="
+          docker compose logs || true
+          echo "===== traces.json ====="
+          cat output/traces.json || true
+          echo "===== logs.json ====="
+          cat output/logs.json || true
+
+      - if: ${{ always() }}
+        name: Tear down collector
+        working-directory: tests/integration
+        run: docker compose down -v

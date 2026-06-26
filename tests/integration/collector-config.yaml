@@ -1,0 +1,35 @@
+# OpenTelemetry Collector config for the integration test.
+#
+# Receives OTLP/HTTP from the library's exporters, writes each signal to its own
+# file (read back and asserted by otel-collector.test.ts), and also logs to
+# stdout via the debug exporter for CI diagnostics.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+extensions:
+  # Readiness probe — the CI workflow polls this before running the test.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+exporters:
+  # One file per signal so the test can parse each independently.
+  file/traces:
+    path: /output/traces.json
+  file/logs:
+    path: /output/logs.json
+  # Mirrors everything to the collector's stdout (`docker compose logs`).
+  debug:
+    verbosity: detailed
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [file/traces, debug]
+    logs:
+      receivers: [otlp]
+      exporters: [file/logs, debug]

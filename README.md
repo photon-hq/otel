@@ -7,6 +7,7 @@ Vanilla OTel works, but the setup is verbose, the logger plumbing is awkward, an
 - **`setupOtel()`** — idempotent one-call bootstrap for traces + logs. Honors all standard `OTEL_EXPORTER_OTLP_*` env vars.
 - **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and is gated by a configurable `LOG_LEVEL`.
 - **`withSpan(name, attrs?, fn)`** — wrap any sync or async function in a span; errors are recorded and PII in the error message is scrubbed before being attached to span status.
+- **Automatic `fetch` tracing** — `setupOtel()` wraps `globalThis.fetch` so every outbound request gets a CLIENT span and W3C trace-context headers. On **Bun** this is the only fetch instrumentation that works — the standard `diagnostics_channel`-based OTel instrumentations emit nothing for Bun's native fetch — and it behaves identically on Node.
 - **`sanitizeEmail` / `sanitizePhone` / `sanitizeErrorMessage`** — PII helpers you can reuse anywhere.
 
 OTLP/HTTP only (no gRPC, no proto). Works identically on Bun and Node ≥ 20.
@@ -34,7 +35,9 @@ const log = createLogger("server");
 
 await withSpan("handle-request", { route: "/users" }, async () => {
   log.info("processing request", { userId: 42 });
-  // ... your work
+  // Outbound fetch is traced automatically: a CLIENT span, parented to this
+  // one, with a `traceparent` header injected for the downstream service.
+  await fetch("https://api.example.com/users");
 });
 ```
 
@@ -46,6 +49,7 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `endpoint` option) is unset, `setupOtel
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `setupOtel(options): OtelHandle`              | Boots OTLP/HTTP traces + logs. Idempotent. Returns `{ shutdown(): Promise<void> }`.                        |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
+| `instrumentFetch(options?): FetchInstrumentation` | Wraps `globalThis.fetch` for CLIENT spans + W3C propagation. Auto-enabled by `setupOtel` when traces are configured. Returns `{ unpatch() }`. |
 | `createLogger(module): PhotonLogger`          | Returns `{ info, warn, error, debug }`. Each call emits to OTel + `console`, correlates to active span.    |
 | `setLogLevel(level): void`                    | Set the minimum level emitted (`debug`/`info`/`warn`/`error`/`silent`). `LOG_LEVEL` env still wins.        |
 | `getLogLevel(): LogLevel`                     | Current effective level after env / override / default resolution.                                        |
@@ -108,6 +112,30 @@ Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
 | `OTEL_EXPORTER_OTLP_HEADERS`              | `key=value,key=value` headers; merged with `options.headers` (env wins). |
 | `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`. Also drives the default log level. |
 | `LOG_LEVEL`                               | Minimum log level: `debug` \| `info` \| `warn` \| `error` \| `silent`. Overrides `setLogLevel()` / `setupOtel({ logLevel })`. |
+
+## Automatic fetch instrumentation
+
+`setupOtel()` patches `globalThis.fetch` to emit a CLIENT span per outbound request, carrying
+W3C `traceparent` (and baggage) headers so traces continue across services. Each span is named by
+HTTP method (`GET`, `POST`, …) and carries `http.request.method`, `url.full`, `server.address`,
+`server.port`, and `http.response.status_code`; `4xx`/`5xx` responses and thrown network errors are
+marked `ERROR`. This covers **outbound** requests only — inbound `Bun.serve`/Elysia server spans are
+separate (see [Framework integration](#framework-integration)).
+
+- **Default:** on when a traces endpoint is configured. Pass `instrumentFetch: false` to disable, or
+  `instrumentFetch: true` to force it on even without an endpoint.
+- **Filter URLs:** `instrumentFetch: { ignore: (url) => url.includes("/healthz") }`. Your own OTLP
+  endpoint is always excluded automatically, so the exporter never traces itself.
+- **Why Bun needs this:** Bun's native `fetch` emits no `diagnostics_channel` events, so
+  `@opentelemetry/instrumentation-undici` / `-http` — and `opentelemetry-instrumentation-fetch-node`,
+  which is itself `diagnostics_channel`-based — produce no spans. Wrapping the global is the only
+  mechanism that works, and it behaves identically on Node.
+- **Caveat:** `url.full` includes the query string. If your URLs carry secrets there, use `ignore`
+  or redact upstream.
+
+`setupOtel()` also installs a global W3C trace-context + baggage propagator (previously none was
+registered) — that is what makes the outbound `traceparent` injection, and any manual propagation,
+actually take effect.
 
 ## Running on Node vs Bun
 
