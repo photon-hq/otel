@@ -85,4 +85,20 @@ describe("setupOtel", () => {
       globalThis.fetch = original;
     }
   });
+
+  it("respects instrumentFetch: false even when an endpoint is configured", async () => {
+    const original = globalThis.fetch;
+    try {
+      const handle = setupOtel({
+        serviceName: "fetch-opt-out",
+        endpoint: "https://otel.example.com",
+        instrumentFetch: false,
+      });
+      expect(globalThis.fetch).toBe(original);
+      await handle.shutdown();
+      expect(globalThis.fetch).toBe(original);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

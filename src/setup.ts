@@ -110,22 +110,34 @@ function resolveLogsEndpoint(base: string | undefined): string | undefined {
   return generic ? `${generic.replace(TRAILING_SLASH, "")}/v1/logs` : undefined;
 }
 
-function otlpOriginsOf(
+/**
+ * Normalize a URL to an `origin + path` key (trailing slash stripped) for exact
+ * self-trace matching. Returns `undefined` for unparseable URLs.
+ */
+function otlpEndpointKey(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname.replace(TRAILING_SLASH, "")}`;
+  } catch {
+    return;
+  }
+}
+
+function otlpEndpointKeysOf(
   tracesEndpoint: string | undefined,
   logsEndpoint: string | undefined
 ): string[] {
-  const origins: string[] = [];
+  const keys: string[] = [];
   for (const endpoint of [tracesEndpoint, logsEndpoint]) {
     if (!endpoint) {
       continue;
     }
-    try {
-      origins.push(new URL(endpoint).origin);
-    } catch {
-      // Ignore malformed endpoint URLs — nothing to exclude.
+    const key = otlpEndpointKey(endpoint);
+    if (key) {
+      keys.push(key);
     }
   }
-  return origins;
+  return keys;
 }
 
 /**
@@ -145,11 +157,14 @@ function startFetchInstrumentation(
     return;
   }
   const userOptions = typeof option === "object" ? option : undefined;
-  const otlpOrigins = otlpOriginsOf(tracesEndpoint, logsEndpoint);
+  const otlpEndpointKeys = otlpEndpointKeysOf(tracesEndpoint, logsEndpoint);
   return instrumentFetch({
-    ignore: (url) =>
-      otlpOrigins.some((origin) => url.startsWith(origin)) ||
-      (userOptions?.ignore?.(url) ?? false),
+    ignore: (url) => {
+      const key = otlpEndpointKey(url);
+      const isOtlpEndpoint =
+        key !== undefined && otlpEndpointKeys.includes(key);
+      return isOtlpEndpoint || (userOptions?.ignore?.(url) ?? false);
+    },
   });
 }
 

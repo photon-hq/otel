@@ -257,7 +257,7 @@ describe("instrumentFetch", () => {
     expect(globalThis.fetch).toBe(fake);
   });
 
-  it("still emits a span when the Request body was already used", async () => {
+  it("emits a span and still injects traceparent when the Request body was already used", async () => {
     instrumentFetch();
     const req = new Request("https://api.example.com/x?status=200", {
       method: "POST",
@@ -270,5 +270,10 @@ describe("instrumentFetch", () => {
     const span = spanByName("POST");
     expect(span).toBeDefined();
     expect(span?.attributes["http.response.status_code"]).toBe(200);
+    // The body is gone, but trace context must still reach the wire via the
+    // (mutated-in-place) request headers.
+    const traceparent = captured[0]?.headers.traceparent;
+    expect(traceparent).toMatch(TRACEPARENT);
+    expect(traceparent).toContain(span?.spanContext().traceId ?? "");
   });
 });

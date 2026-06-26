@@ -151,8 +151,13 @@ function callOriginal(
   headers: Headers
 ): Promise<Response> {
   if (input instanceof Request) {
-    // A consumed Request cannot be safely rebuilt; perform it untouched.
+    // A consumed Request's body can't be rebuilt, but its headers stay mutable
+    // (verified on both Bun and Node) — inject the propagated context in place
+    // so trace headers still flow without reconstructing the unusable Request.
     if (input.bodyUsed) {
+      for (const [key, value] of headers.entries()) {
+        input.headers.set(key, value);
+      }
       return original(input, init);
     }
     return original(new Request(input, { ...init, headers }));
