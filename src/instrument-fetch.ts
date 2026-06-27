@@ -18,13 +18,23 @@ import {
 import { sanitizeErrorMessage } from "./sanitize";
 import { PHOTON_OTEL_VERSION } from "./version";
 
-export interface InstrumentFetchOptions {
+export interface FetchSpanOptions {
+  /**
+   * Static attributes merged into every CLIENT span this instrumentation
+   * produces. Handy for tagging an SDK's traffic, e.g. `{ "peer.service":
+   * "openai" }`, so spans from different instrumented fetches stay
+   * distinguishable.
+   */
+  attributes?: Attributes;
   /**
    * Return `true` to skip instrumenting a request whose absolute URL is passed
    * in. Useful to drop noisy endpoints or URLs that carry secrets in their
    * query string. The request is still performed — only the span is skipped.
    */
   ignore?: (url: string) => boolean;
+}
+
+export interface InstrumentFetchOptions extends FetchSpanOptions {
   /**
    * Which fetch-instrumentation strategy `setupOtel()` should use:
    * - `"auto"` (default): the official `@opentelemetry/instrumentation-undici`
@@ -182,8 +192,9 @@ function callOriginal(
 
 function buildWrappedFetch(
   original: FetchFn,
-  options?: InstrumentFetchOptions
+  options?: FetchSpanOptions
 ): FetchFn {
+  const staticAttributes = options?.attributes;
   return (input, init) => {
     const { method, url } = resolveRequestMeta(input, init);
     if (options?.ignore?.(url)) {
@@ -194,6 +205,9 @@ function buildWrappedFetch(
       name,
       { kind: SpanKind.CLIENT },
       async (span) => {
+        if (staticAttributes) {
+          span.setAttributes(staticAttributes);
+        }
         span.setAttributes(fetchAttributes(name, url));
         try {
           const headers = buildPropagatedHeaders(input, init);
@@ -229,6 +243,38 @@ function buildWrappedFetch(
 }
 
 /**
+ * Wrap a single fetch function — not `globalThis.fetch` — so requests made
+ * through the RETURNED fetch produce a CLIENT span and carry W3C trace context
+ * to the downstream service.
+ *
+ * Built for SDKs that accept a `fetch` option, e.g.
+ * `new OpenAI({ fetch: createInstrumentedFetch() })`. Unlike `instrumentFetch`,
+ * it never mutates the global and has no lifecycle to unpatch — it just returns
+ * a new fetch you pass where you need it.
+ *
+ * `baseFetch` defaults to the current `globalThis.fetch`, read at call time.
+ * Idempotent: passing an already-instrumented fetch returns it unchanged.
+ *
+ * Always uses the global-wrap technique (the native undici instrumentation
+ * cannot target a single instance), so it behaves identically on Bun and Node.
+ * On Node, if `setupOtel`'s global fetch instrumentation is also active, the
+ * SDK's request is captured twice — disable it (`instrumentFetch: false`) for
+ * paths you instrument per-instance.
+ */
+export function createInstrumentedFetch(
+  baseFetch: typeof fetch = globalThis.fetch,
+  options?: FetchSpanOptions
+): typeof fetch {
+  if (getPatchOriginal(baseFetch)) {
+    return baseFetch;
+  }
+  const wrapped = buildWrappedFetch(baseFetch, options);
+  preserveProps(baseFetch, wrapped);
+  setPatchOriginal(wrapped, baseFetch);
+  return wrapped as typeof fetch;
+}
+
+/**
  * Wrap `globalThis.fetch` so every outbound request produces a CLIENT span and
  * carries W3C trace context to the downstream service.
  *
@@ -244,7 +290,7 @@ function buildWrappedFetch(
 export function instrumentFetch(
   options?: InstrumentFetchOptions
 ): FetchInstrumentation {
-  const current: FetchFn = globalThis.fetch;
+  const current = globalThis.fetch;
   const existingOriginal = getPatchOriginal(current);
   if (existingOriginal) {
     return {
@@ -257,9 +303,7 @@ export function instrumentFetch(
   }
 
   const original = current;
-  const wrapped = buildWrappedFetch(original, options);
-  preserveProps(original, wrapped);
-  setPatchOriginal(wrapped, original);
+  const wrapped = createInstrumentedFetch(original, options);
   setGlobalFetch(wrapped);
 
   return {

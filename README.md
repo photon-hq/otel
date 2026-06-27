@@ -50,6 +50,7 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `endpoint` option) is unset, `setupOtel
 | `setupOtel(options): OtelHandle`              | Boots OTLP/HTTP traces + logs. Idempotent. Returns `{ shutdown(): Promise<void> }`.                        |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
 | `instrumentFetch(options?): FetchInstrumentation` | Low-level wrap of `globalThis.fetch` for CLIENT spans + W3C propagation. Returns `{ unpatch() }`. `setupOtel` calls this on Bun; on Node it prefers native undici. |
+| `createInstrumentedFetch(baseFetch?, options?): typeof fetch` | Returns a NEW instrumented fetch (CLIENT spans + W3C propagation) wrapping `baseFetch` (default `globalThis.fetch`) without touching the global. For SDKs that take a `fetch` option. |
 | `createLogger(module): PhotonLogger`          | Returns `{ info, warn, error, debug }`. Each call emits to OTel + `console`, correlates to active span.    |
 | `setLogLevel(level): void`                    | Set the minimum level emitted (`debug`/`info`/`warn`/`error`/`silent`). `LOG_LEVEL` env still wins.        |
 | `getLogLevel(): LogLevel`                     | Current effective level after env / override / default resolution.                                        |
@@ -156,6 +157,39 @@ Caveats:
 `setupOtel()` also installs a global W3C trace-context + baggage propagator (previously none was
 registered) — that is what makes the outbound `traceparent` injection, and any manual propagation,
 actually take effect.
+
+## Instrumenting a specific fetch (SDKs)
+
+Sometimes you don't want to touch `globalThis.fetch` — you just want one SDK's outbound calls traced.
+`createInstrumentedFetch(baseFetch?, options?)` returns a **new** fetch (CLIENT spans + W3C
+`traceparent` injection) wrapping `baseFetch` (default `globalThis.fetch`, read at call time) **without
+mutating the global**. Pass it wherever an SDK accepts a `fetch`:
+
+```ts
+import { createInstrumentedFetch } from "@photon-ai/otel";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  // tag every span from this SDK so it's distinguishable from other traffic
+  fetch: createInstrumentedFetch(undefined, {
+    attributes: { "peer.service": "openai" },
+  }),
+});
+```
+
+- Returns a fetch function directly — there's no global lifecycle, so no `unpatch()` handle.
+- Idempotent: passing an already-instrumented fetch returns it unchanged.
+- `options`: `ignore: (url) => boolean` skips spans for some URLs; `attributes` merges static attributes
+  into every span (the practical way to tell different SDKs' spans apart).
+- Always uses the wrapper technique, so it behaves identically on Bun and Node (the native undici
+  instrumentation can't target a single instance).
+
+**Avoid double-counting on Node.** If `setupOtel()`'s global fetch instrumentation is active (the
+default on Node uses undici, which captures *all* undici traffic), an SDK request made through a
+per-instance wrapper is recorded **twice** — once by the wrapper, once by undici. When instrumenting
+SDKs per-instance, disable the global path with `setupOtel({ instrumentFetch: false })` (or reserve
+per-instance wrapping for SDKs you accept doubling on). **Bun has no such issue** — its global wrap only
+affects `globalThis.fetch`, so a separately-passed instrumented fetch is counted once.
 
 ## Running on Node vs Bun
 
