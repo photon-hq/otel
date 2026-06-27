@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { context, propagation, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -22,7 +23,9 @@ import {
   type InstrumentFetchOptions,
   instrumentFetch,
 } from "./instrument-fetch";
+import { instrumentFetchNative } from "./instrument-fetch-native";
 import { type LogLevel, setLogLevel } from "./logger";
+import { IS_BUN } from "./runtime";
 
 export interface SetupOtelOptions {
   /**
@@ -141,8 +144,10 @@ function otlpEndpointKeysOf(
 }
 
 /**
- * Patch `globalThis.fetch` unless disabled. Defaults to on when a traces
- * pipeline is configured. Always excludes our own OTLP endpoints so the
+ * Start fetch instrumentation unless disabled. Defaults to on when a traces
+ * pipeline is configured. On Node (mode `"auto"`) this registers the native
+ * `@opentelemetry/instrumentation-undici`; on Bun, or with mode `"global"`, it
+ * wraps `globalThis.fetch`. Always excludes our own OTLP endpoints so the
  * exporter's traffic is never self-traced (matters on Node, where the OTLP
  * exporter can use fetch).
  */
@@ -158,14 +163,29 @@ function startFetchInstrumentation(
   }
   const userOptions = typeof option === "object" ? option : undefined;
   const otlpEndpointKeys = otlpEndpointKeysOf(tracesEndpoint, logsEndpoint);
-  return instrumentFetch({
-    ignore: (url) => {
-      const key = otlpEndpointKey(url);
-      const isOtlpEndpoint =
-        key !== undefined && otlpEndpointKeys.includes(key);
-      return isOtlpEndpoint || (userOptions?.ignore?.(url) ?? false);
-    },
-  });
+  const ignore = (url: string): boolean => {
+    const key = otlpEndpointKey(url);
+    const isOtlpEndpoint = key !== undefined && otlpEndpointKeys.includes(key);
+    return isOtlpEndpoint || (userOptions?.ignore?.(url) ?? false);
+  };
+
+  // "auto" (default) prefers Node's native undici instrumentation; "global"
+  // forces the globalThis.fetch wrap. Native never applies on Bun, whose fetch
+  // emits no diagnostics_channel events. Fall back to the wrap when the optional
+  // undici packages aren't installed, so Node still gets fetch spans.
+  if ((userOptions?.mode ?? "auto") === "auto" && !IS_BUN) {
+    const native = instrumentFetchNative(
+      { ...userOptions, ignore },
+      createRequire(import.meta.url)
+    );
+    if (native) {
+      return native;
+    }
+  }
+  // Forward the user's options (e.g. static `attributes`) to the wrap too; the
+  // composed `ignore` overrides any user-supplied one so OTLP self-traces stay
+  // excluded.
+  return instrumentFetch({ ...userOptions, ignore });
 }
 
 /**

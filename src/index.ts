@@ -1,6 +1,8 @@
 // biome-ignore lint/performance/noBarrelFile: package public entry point
 export {
+  createInstrumentedFetch,
   type FetchInstrumentation,
+  type FetchSpanOptions,
   type InstrumentFetchOptions,
   instrumentFetch,
 } from "./instrument-fetch";

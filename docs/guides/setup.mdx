@@ -106,7 +106,7 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer real-token"
 
 ## Fetch instrumentation during setup
 
-`setupOtel()` can also patch `globalThis.fetch`.
+`setupOtel()` can also instrument outbound `fetch`. On Node it uses the native undici instrumentation when the optional `@opentelemetry/instrumentation-undici` and `@opentelemetry/instrumentation` packages are installed, and otherwise falls back to wrapping `globalThis.fetch`. Bun always uses the `globalThis.fetch` wrap.
 
 Default behavior:
 
@@ -132,6 +132,8 @@ setupOtel({
 });
 ```
 
+On Node, setup uses the native undici instrumentation by default; pass `instrumentFetch: { mode: "global" }` to force the `globalThis.fetch` wrap on both runtimes. See [Fetch instrumentation](/guides/fetch-instrumentation).
+
 ## Shutdown
 
 The returned handle exposes `shutdown()`.
@@ -147,7 +149,7 @@ process.on("SIGTERM", async () => {
 
 Shutdown does three things:
 
-1. Restores the original `globalThis.fetch` if setup patched it.
+1. Stops the fetch instrumentation setup installed — restores `globalThis.fetch` on the wrap path, or disables the undici instrumentation on Node.
 2. Shuts down the tracer provider.
 3. Shuts down the logger provider.
 

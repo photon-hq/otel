@@ -1,11 +1,9 @@
 ---
 title: "Fetch instrumentation"
-description: "Trace outbound globalThis.fetch calls, propagate W3C trace context, filter URLs, and understand Bun-specific design."
+description: "Trace outbound fetch on Bun and Node, propagate W3C trace context, instrument a specific fetch for SDKs, and understand the runtime strategy."
 ---
 
-`instrumentFetch()` wraps `globalThis.fetch` so outbound HTTP requests create client spans and carry trace context downstream.
-
-Most services should let `setupOtel()` manage this automatically.
+`setupOtel()` automatically instruments outbound `fetch` so HTTP requests create client spans and carry trace context downstream. Most services should let setup manage this.
 
 ```ts
 setupOtel({
@@ -14,11 +12,16 @@ setupOtel({
 });
 ```
 
-When a traces endpoint is configured, setup patches fetch by default.
+When a traces endpoint is configured, setup instruments fetch by default. The strategy depends on the runtime (see [Runtime strategy and `mode`](#runtime-strategy-and-mode)):
+
+- **Node** uses the official `@opentelemetry/instrumentation-undici` (Node's `fetch` is undici-backed). It captures all undici traffic, emits the full HTTP client semantic conventions, and never monkey-patches the global.
+- **Bun** wraps `globalThis.fetch` directly, because Bun's native fetch emits no `diagnostics_channel` events for the standard instrumentations.
+
+The standalone `instrumentFetch()` export always performs the `globalThis.fetch` wrap, and `createInstrumentedFetch()` wraps a single fetch instance (for SDKs) without touching the global.
 
 ## What each fetch span contains
 
-For an outbound request, the wrapper creates a span with:
+For an outbound request, fetch instrumentation creates a span with:
 
 - kind `CLIENT`
 - name set to the uppercased HTTP method, such as `GET` or `POST`
@@ -28,15 +31,17 @@ For an outbound request, the wrapper creates a span with:
 - `server.port`, when resolvable
 - `http.response.status_code`, when a response is received
 
-Statuses:
+Statuses (the `globalThis.fetch` wrap — Bun, or `mode: "global"`):
 
 - `2xx` and `3xx` responses are marked `OK`.
 - `4xx` and `5xx` responses are marked `ERROR`.
 - thrown network errors are recorded as exceptions and marked `ERROR`.
 
+The native undici instrumentation (Node default) follows the HTTP semantic conventions instead: a successful client span is left `UNSET`, and typically only `5xx` and network failures are marked `ERROR`. It also adds richer attributes such as `url.scheme`, `url.path`, `network.peer.*`, and `user_agent.original`.
+
 ## Trace propagation
 
-The wrapper injects the active OpenTelemetry context into outgoing headers using W3C propagation.
+Fetch instrumentation injects the active OpenTelemetry context into outgoing headers using W3C propagation.
 
 That means downstream services receive a `traceparent` header and can continue the same trace.
 
@@ -63,6 +68,28 @@ instrumentation.unpatch();
 ```
 
 This is useful in tests, custom bootstrap flows, or tools that do not call `setupOtel()`.
+
+## Instrumenting a specific fetch (SDKs)
+
+Sometimes you do not want to touch `globalThis.fetch` — you only want one SDK's outbound calls traced. `createInstrumentedFetch(baseFetch?, options?)` returns a new fetch (client spans + W3C `traceparent` injection) wrapping `baseFetch` (default `globalThis.fetch`, read at call time) without mutating the global. Pass it wherever an SDK accepts a `fetch`:
+
+```ts
+import { createInstrumentedFetch } from "@photon-ai/otel";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  fetch: createInstrumentedFetch(undefined, {
+    attributes: { "peer.service": "openai" },
+  }),
+});
+```
+
+- It returns a fetch function directly. There is no global lifecycle, so no `unpatch()` handle.
+- It is idempotent: passing an already-instrumented fetch returns it unchanged.
+- `options` accepts `ignore: (url) => boolean` to skip spans for some URLs, and `attributes` to merge static attributes into every span — the practical way to tell different SDKs' spans apart.
+- It always uses the wrapper technique, so it behaves identically on Bun and Node. The native undici instrumentation cannot target a single instance.
+
+**Avoid double-counting on Node.** If `setupOtel()`'s global fetch instrumentation is active (the default uses undici, which captures all undici traffic), an SDK request made through a per-instance wrapper is recorded twice — once by the wrapper, once by undici. When you instrument SDKs per-instance, disable the global path with `instrumentFetch: false`, or reserve per-instance wrapping for SDKs you accept doubling on. Bun does not have this problem: its global wrap only affects `globalThis.fetch`, so a separately-passed instrumented fetch is counted once.
 
 ## Filtering URLs
 
@@ -120,13 +147,26 @@ The wrapper preserves common fetch behavior:
 
 These details keep instrumentation from changing the request semantics your application depends on.
 
-## Why Bun needs a fetch wrapper
+## Runtime strategy and `mode`
 
-Many Node-focused OpenTelemetry HTTP instrumentations rely on `diagnostics_channel` events.
+`setupOtel()` picks the fetch strategy by runtime (`instrumentFetch: { mode: "auto" }`, the default):
 
-Bun's native `fetch` does not emit the events those instrumentations need. As a result, those standard instrumentations do not produce spans for Bun-native fetch calls.
+- **Node** registers the official `@opentelemetry/instrumentation-undici`. It hooks Node's undici at the `diagnostics_channel` level, so it captures all undici traffic — not just `globalThis.fetch` — and emits the full HTTP client semantic conventions. It ships as an optional dependency; if it is not installed, setup falls back to the wrap.
+- **Bun** wraps `globalThis.fetch`. Bun's native fetch emits no `diagnostics_channel` events, so undici- and diagnostics-channel-based instrumentations produce no spans there. The wrap is the only mechanism that works.
 
-Wrapping `globalThis.fetch` is the portable approach that works on Bun and Node.
+Pass `mode: "global"` to force the wrap on both runtimes:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: { mode: "global" },
+});
+```
+
+Use `"global"` when you want identical spans on Bun and Node, or when you want the wrap's built-in PII scrubbing of error messages applied on Node (the undici instrumentation does not scrub status messages).
+
+Native fetch tracing requires Node 20.6 or newer (the undici instrumentation's floor); older 20.x falls back to the wrap.
 
 ## Privacy caveat
 
@@ -134,7 +174,7 @@ Fetch spans include `url.full`, which includes the query string.
 
 Do not put secrets, tokens, emails, or phone numbers in query strings. If you must call an endpoint with sensitive query parameters, use `ignore` to skip that URL or sanitize upstream.
 
-Thrown fetch error messages are sanitized before being used as span status messages, but URL attributes are not sanitized.
+Thrown fetch error messages are sanitized before being used as span status messages by the `globalThis.fetch` wrap (Bun, or `mode: "global"`). The native undici instrumentation on Node does not scrub status messages — use `mode: "global"` if you need that scrubbing on Node. URL attributes are not sanitized on either path.
 
 ## Best practices
 

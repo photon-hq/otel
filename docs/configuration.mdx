@@ -204,6 +204,18 @@ setupOtel({
 });
 ```
 
+On Node, `setupOtel()` uses the native `@opentelemetry/instrumentation-undici` by default; on Bun it wraps `globalThis.fetch`. Force the wrap on both runtimes with `mode: "global"`:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: { mode: "global" },
+});
+```
+
+See [Fetch instrumentation](/guides/fetch-instrumentation) for the runtime differences and the `createInstrumentedFetch()` helper for instrumenting an SDK's fetch without touching the global.
+
 The package always excludes its own OTLP trace and log exporter endpoints from fetch instrumentation. That prevents exporter traffic from recursively tracing itself.
 
 ## Environment variable precedence

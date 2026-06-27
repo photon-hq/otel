@@ -65,9 +65,11 @@ It replaces every email and phone-like match in the string.
 Automatic scrubbing is applied to span status messages in:
 
 - `withSpan()` when the wrapped callback throws
-- `instrumentFetch()` when the underlying fetch throws
+- the `globalThis.fetch` wrap (`instrumentFetch()`, `createInstrumentedFetch()`, and `setupOtel()` on Bun or with `mode: "global"`) when the underlying fetch throws
 
 In both cases, the original error is still recorded as an exception event and rethrown where appropriate. The sanitized value is used for the span status message.
+
+On Node, `setupOtel()` defaults to the native `@opentelemetry/instrumentation-undici`, which does **not** scrub fetch error status messages. Use `instrumentFetch: { mode: "global" }` if you need that scrubbing on Node.
 
 ## Where scrubbing does not happen automatically
 

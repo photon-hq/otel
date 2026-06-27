@@ -7,6 +7,7 @@ Import everything from the package root:
 
 ```ts
 import {
+  createInstrumentedFetch,
   createLogger,
   getLogLevel,
   instrumentFetch,
@@ -178,13 +179,26 @@ Wraps `globalThis.fetch`.
 function instrumentFetch(options?: InstrumentFetchOptions): FetchInstrumentation;
 ```
 
+### `FetchSpanOptions`
+
+```ts
+interface FetchSpanOptions {
+  ignore?: (url: string) => boolean;
+  attributes?: Attributes;
+}
+```
+
+`ignore` skips spans for matching URLs. `attributes` (the OpenTelemetry `Attributes` type) merges static attributes into every span this instrumentation produces — useful for tagging an SDK's traffic, such as `{ "peer.service": "openai" }`.
+
 ### `InstrumentFetchOptions`
 
 ```ts
-interface InstrumentFetchOptions {
-  ignore?: (url: string) => boolean;
+interface InstrumentFetchOptions extends FetchSpanOptions {
+  mode?: "auto" | "global";
 }
 ```
+
+`mode` selects the strategy `setupOtel()` uses: `"auto"` (default) is the native undici instrumentation on Node — when the optional `@opentelemetry/instrumentation-undici` and `@opentelemetry/instrumentation` packages are installed, otherwise the wrap — and the `globalThis.fetch` wrap on Bun; `"global"` forces the wrap on both runtimes. `instrumentFetch()` always performs the wrap regardless of `mode`.
 
 ### `FetchInstrumentation`
 
@@ -205,6 +219,29 @@ interface FetchInstrumentation {
 - Sanitizes thrown error messages before setting span status messages.
 - Avoids double wrapping.
 - Restores the original fetch through `unpatch()`.
+
+When `setupOtel()` instruments fetch on Node, it uses the native undici instrumentation instead of this wrap — unless `mode: "global"` is set, or the optional undici packages aren't installed, in which case it falls back to this wrap.
+
+## `createInstrumentedFetch(baseFetch, options)`
+
+Returns a new instrumented fetch wrapping `baseFetch` (default `globalThis.fetch`) without mutating the global. Built for SDKs that accept a `fetch` option.
+
+```ts
+function createInstrumentedFetch(
+  baseFetch?: typeof fetch,
+  options?: FetchSpanOptions
+): typeof fetch;
+```
+
+### Behavior
+
+- Wraps the given fetch so each non-ignored request creates a client span with HTTP attributes and W3C trace-context injection.
+- Merges `options.attributes` into every span.
+- Returns the fetch function directly — there is no global lifecycle and no `unpatch()`.
+- Is idempotent: passing an already-instrumented fetch returns it unchanged.
+- Always uses the wrapper technique, so it works identically on Bun and Node.
+
+On Node, avoid combining this with the global undici instrumentation for the same requests, or they are recorded twice. See [Fetch instrumentation](/guides/fetch-instrumentation).
 
 ## `sanitizeEmail(input)`
 

@@ -10,7 +10,7 @@ It keeps the public API intentionally small:
 - `setupOtel()` boots traces and logs with OTLP/HTTP exporters.
 - `createLogger(module)` emits structured logs to OpenTelemetry and the console.
 - `withSpan(name, attrs, fn)` wraps sync or async work in a span.
-- `instrumentFetch()` patches `globalThis.fetch` for outbound client spans and W3C trace propagation.
+- `setupOtel()` auto-instruments outbound `fetch` (native undici on Node when its optional packages are installed, otherwise a `globalThis.fetch` wrap, which Bun always uses) for client spans and W3C trace propagation; `instrumentFetch()` and `createInstrumentedFetch()` expose it directly.
 - `sanitizeEmail()`, `sanitizePhone()`, and `sanitizeErrorMessage()` mask common PII before it reaches selected telemetry fields.
 
 The package is designed for teams that want useful telemetry without repeating verbose OpenTelemetry SDK setup in every service.
@@ -43,7 +43,7 @@ Think of the package in four layers:
 1. `setupOtel()` installs the global OpenTelemetry runtime pieces: context manager, propagator, tracer provider, and logger provider.
 2. `withSpan()` uses the global tracer provider to create application spans.
 3. `createLogger()` uses the global logger provider and active context so logs inside spans carry trace correlation.
-4. `instrumentFetch()` wraps outbound `fetch` so downstream services receive W3C trace context.
+4. Fetch auto-instrumentation (native undici on Node when its optional packages are installed, otherwise the `globalThis.fetch` wrap that Bun always uses) makes outbound `fetch` carry W3C trace context to downstream services.
 
 Those layers are independent enough to test directly, but they are meant to be used together in service startup code.
 
