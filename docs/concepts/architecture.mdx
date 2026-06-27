@@ -24,7 +24,7 @@ Keeping this surface small is a design choice. Most service code should not need
 
 `setupOtel()` owns process-level OpenTelemetry initialization.
 
-It creates a resource, installs context propagation, configures trace and log providers, and optionally patches fetch.
+It creates a resource, installs context propagation, configures trace and log providers, and optionally instruments fetch.
 
 The important OpenTelemetry primitives are:
 
@@ -126,11 +126,12 @@ The helper is intentionally small. It does not implement retries, sampling, nami
 
 ## Fetch instrumentation architecture
 
-The fetch wrapper handles outbound requests directly at `globalThis.fetch`.
+`setupOtel()` instruments outbound fetch with a runtime-specific strategy:
 
-That is necessary for Bun because diagnostics-channel-based HTTP instrumentation does not observe Bun-native fetch calls.
+- **Node** registers the official `@opentelemetry/instrumentation-undici`. Node's `fetch` is undici-backed, so this hooks at the `diagnostics_channel` level, captures all undici traffic, and emits the full HTTP client semantic conventions. It is an optional dependency, with a fallback to the wrap when absent.
+- **Bun** wraps `globalThis.fetch` directly, because diagnostics-channel-based HTTP instrumentation does not observe Bun-native fetch calls. `mode: "global"` forces this wrap on both runtimes.
 
-The wrapper:
+The `globalThis.fetch` wrapper — also exposed as `instrumentFetch()`, and per-instance as `createInstrumentedFetch()`:
 
 - creates client spans
 - injects trace context through headers
@@ -140,6 +141,8 @@ The wrapper:
 - preserves fetch request semantics
 - guards against double wrapping
 - can restore the original fetch
+
+`createInstrumentedFetch()` applies the same wrapper to a single fetch function — for SDKs that accept a `fetch` — without mutating the global.
 
 ## Privacy architecture
 

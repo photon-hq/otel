@@ -32,6 +32,7 @@ The unit suite covers:
 - span success and failure behavior
 - PII sanitization helpers
 - fetch instrumentation spans, propagation, request preservation, ignore rules, double-wrap protection, and unpatching
+- native undici registration (mode routing) and `createInstrumentedFetch()` for a single fetch instance
 
 The integration suite is excluded from the default unit run because it needs Docker and a live collector.
 

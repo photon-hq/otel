@@ -104,7 +104,7 @@ Failures can show up in several places:
 - the application span status becomes `ERROR`
 - an exception event is recorded on the span
 - a log can include exception attributes
-- a fetch span can become `ERROR` for HTTP `4xx` or `5xx`
+- a fetch span can become `ERROR` for failed responses (`4xx`/`5xx` on the `globalThis.fetch` wrap; `5xx`/network on Node's native undici instrumentation)
 - a thrown fetch error can be recorded on the fetch span
 
 Use all of these intentionally.

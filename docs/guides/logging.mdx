@@ -157,7 +157,7 @@ Be careful with high-cardinality or sensitive values:
 - request bodies
 - auth headers
 
-The logger does not sanitize arbitrary log attributes or exception messages. PII scrubbing is applied by `withSpan()` and `instrumentFetch()` to span status messages, and the sanitize helpers are exported for your own use.
+The logger does not sanitize arbitrary log attributes or exception messages. PII scrubbing is applied to span status messages by `withSpan()` and the `globalThis.fetch` wrap (the native undici instrumentation on Node does not scrub fetch errors — see [Fetch instrumentation](/guides/fetch-instrumentation)), and the sanitize helpers are exported for your own use.
 
 If a value might contain PII, sanitize it before logging.
 

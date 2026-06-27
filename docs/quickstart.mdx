@@ -98,7 +98,7 @@ If your callback throws, the span records the exception, sets `ERROR` status, sa
 
 ## 6. Trace outbound fetch calls
 
-When a traces endpoint is configured, `setupOtel()` automatically instruments `globalThis.fetch`.
+When a traces endpoint is configured, `setupOtel()` automatically instruments outbound `fetch` (native undici on Node, a `globalThis.fetch` wrap on Bun).
 
 ```ts
 await withSpan("orders.enrich", async () => {
