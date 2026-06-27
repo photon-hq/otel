@@ -53,6 +53,7 @@
     "clean-publish": "^7.0.0",
     "tsdown": "^0.22.3",
     "ultracite": "7.7.0",
+    "unrun": "^0.3.1",
     "vitest": "^2.1.0"
   },
   "peerDependencies": {
