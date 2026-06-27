@@ -182,7 +182,10 @@ function startFetchInstrumentation(
       return native;
     }
   }
-  return instrumentFetch({ ignore });
+  // Forward the user's options (e.g. static `attributes`) to the wrap too; the
+  // composed `ignore` overrides any user-supplied one so OTLP self-traces stay
+  // excluded.
+  return instrumentFetch({ ...userOptions, ignore });
 }
 
 /**

@@ -88,8 +88,13 @@ describe("createInstrumentedFetch", () => {
     globalThis.fetch = realFetch;
   });
 
+  // Restore fetch and tear down the global OTel state this suite installed, so
+  // a later test file can register its own providers instead of inheriting ours.
   afterAll(() => {
     globalThis.fetch = realFetch;
+    context.disable();
+    trace.disable();
+    propagation.disable();
   });
 
   it("does not modify globalThis.fetch", () => {

@@ -17,6 +17,7 @@ interface FakeState {
   config?: RecordedConfig;
   disabled: number;
   registered: number;
+  registeredInstrumentations?: unknown[];
 }
 
 /**
@@ -24,7 +25,13 @@ interface FakeState {
  * what the instrumentation was constructed/registered with so the native path
  * can be exercised on any runtime without the real packages.
  */
-function makeFakeRequire(): { requireFn: RequireFn; state: FakeState } {
+function makeFakeRequire(): {
+  requireFn: RequireFn;
+  state: FakeState;
+  FakeUndiciInstrumentation: new (
+    config?: RecordedConfig
+  ) => { disable(): void };
+} {
   const state: FakeState = { registered: 0, disabled: 0 };
 
   class FakeUndiciInstrumentation {
@@ -42,24 +49,29 @@ function makeFakeRequire(): { requireFn: RequireFn; state: FakeState } {
     }
     if (id === "@opentelemetry/instrumentation") {
       return {
-        registerInstrumentations: () => {
+        registerInstrumentations: (config: { instrumentations: unknown[] }) => {
           state.registered += 1;
+          state.registeredInstrumentations = config.instrumentations;
         },
       };
     }
     throw new Error(`unexpected require: ${id}`);
   };
 
-  return { requireFn, state };
+  return { requireFn, state, FakeUndiciInstrumentation };
 }
 
 describe("instrumentFetchNative", () => {
   it("constructs and registers the undici instrumentation once", () => {
-    const { requireFn, state } = makeFakeRequire();
+    const { requireFn, state, FakeUndiciInstrumentation } = makeFakeRequire();
     const handle = instrumentFetchNative(undefined, requireFn);
 
     expect(handle).toBeDefined();
     expect(state.registered).toBe(1);
+    expect(state.registeredInstrumentations).toHaveLength(1);
+    expect(state.registeredInstrumentations?.[0]).toBeInstanceOf(
+      FakeUndiciInstrumentation
+    );
   });
 
   it("disables the instrumentation on unpatch", () => {
@@ -110,5 +122,30 @@ describe("instrumentFetchNative", () => {
     };
 
     expect(instrumentFetchNative(undefined, requireFn)).toBeUndefined();
+  });
+
+  it("declines the native path when static attributes are requested", () => {
+    const { requireFn, state } = makeFakeRequire();
+
+    // Undici can't stamp static attributes per span, so the caller must fall
+    // back to the wrap — signalled by returning undefined without registering.
+    expect(
+      instrumentFetchNative(
+        { attributes: { "peer.service": "openai" } },
+        requireFn
+      )
+    ).toBeUndefined();
+    expect(state.registered).toBe(0);
+  });
+
+  it("rethrows failures that are not a missing optional package", () => {
+    const requireFn: RequireFn = () => {
+      throw new Error("incompatible @opentelemetry/instrumentation-undici");
+    };
+
+    // A broken/mismatched install must surface rather than silently fall back.
+    expect(() => instrumentFetchNative(undefined, requireFn)).toThrow(
+      "incompatible"
+    );
   });
 });

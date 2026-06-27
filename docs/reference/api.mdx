@@ -198,7 +198,7 @@ interface InstrumentFetchOptions extends FetchSpanOptions {
 }
 ```
 
-`mode` selects the strategy `setupOtel()` uses: `"auto"` (default) is the native undici instrumentation on Node and the `globalThis.fetch` wrap on Bun; `"global"` forces the wrap on both runtimes. `instrumentFetch()` always performs the wrap regardless of `mode`.
+`mode` selects the strategy `setupOtel()` uses: `"auto"` (default) is the native undici instrumentation on Node — when the optional `@opentelemetry/instrumentation-undici` and `@opentelemetry/instrumentation` packages are installed, otherwise the wrap — and the `globalThis.fetch` wrap on Bun; `"global"` forces the wrap on both runtimes. `instrumentFetch()` always performs the wrap regardless of `mode`.
 
 ### `FetchInstrumentation`
 
@@ -220,7 +220,7 @@ interface FetchInstrumentation {
 - Avoids double wrapping.
 - Restores the original fetch through `unpatch()`.
 
-When `setupOtel()` instruments fetch on Node, it uses the native undici instrumentation instead of this wrap (unless `mode: "global"` is set).
+When `setupOtel()` instruments fetch on Node, it uses the native undici instrumentation instead of this wrap — unless `mode: "global"` is set, or the optional undici packages aren't installed, in which case it falls back to this wrap.
 
 ## `createInstrumentedFetch(baseFetch, options)`
 

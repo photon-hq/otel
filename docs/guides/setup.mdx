@@ -106,7 +106,7 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer real-token"
 
 ## Fetch instrumentation during setup
 
-`setupOtel()` can also instrument outbound `fetch` (native undici on Node, a `globalThis.fetch` wrap on Bun).
+`setupOtel()` can also instrument outbound `fetch`. On Node it uses the native undici instrumentation when the optional `@opentelemetry/instrumentation-undici` and `@opentelemetry/instrumentation` packages are installed, and otherwise falls back to wrapping `globalThis.fetch`. Bun always uses the `globalThis.fetch` wrap.
 
 Default behavior:
 

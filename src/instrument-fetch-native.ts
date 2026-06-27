@@ -46,11 +46,33 @@ function toAbsoluteUrl(request: UndiciRequestLike): string {
   }
 }
 
+/** Node's "module isn't installed" errors carry one of these messages. */
+const MODULE_NOT_FOUND_MESSAGE = /Cannot find (module|package)/;
+
+/**
+ * True only when `error` signals an optional package being absent, so the caller
+ * can safely fall back to the `globalThis.fetch` wrap. A version mismatch or a
+ * throw from the package's own initialization is a real failure and must be
+ * rethrown rather than masked as "not installed".
+ */
+function isModuleNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  if (code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND") {
+    return true;
+  }
+  return typeof message === "string" && MODULE_NOT_FOUND_MESSAGE.test(message);
+}
+
 /**
  * Register `@opentelemetry/instrumentation-undici` — Node's native fetch
  * instrumentation, which reads the global tracer provider and propagator that
  * `setupOtel()` installs. Returns `undefined` when the optional packages aren't
- * installed, so the caller can fall back to the `globalThis.fetch` wrap.
+ * installed, or when static `attributes` are requested (the undici path has no
+ * hook to stamp them on every span), so the caller can fall back to the
+ * `globalThis.fetch` wrap.
  *
  * The packages are referenced only through `requireFn(...)` string calls (never
  * a static `import`), so esbuild can't bundle them and Bun never loads them.
@@ -59,6 +81,14 @@ export function instrumentFetchNative(
   options: InstrumentFetchOptions | undefined,
   requireFn: RequireFn
 ): FetchInstrumentation | undefined {
+  // The undici instrumentation has no hook to stamp caller-supplied static
+  // attributes onto every span, so when they're requested, decline the native
+  // path and let the caller fall back to the globalThis.fetch wrap (which does
+  // apply them).
+  if (options?.attributes && Object.keys(options.attributes).length > 0) {
+    return;
+  }
+
   let UndiciInstrumentation: UndiciInstrumentationCtor;
   let registerInstrumentations: RegisterInstrumentationsFn;
   try {
@@ -72,8 +102,13 @@ export function instrumentFetchNative(
     };
     UndiciInstrumentation = undiciModule.UndiciInstrumentation;
     registerInstrumentations = instrumentationModule.registerInstrumentations;
-  } catch {
-    return;
+  } catch (error) {
+    // Only "package not installed" is a valid fall-back-to-wrap signal; a
+    // version mismatch or a broken install must surface, not be swallowed.
+    if (isModuleNotFoundError(error)) {
+      return;
+    }
+    throw error;
   }
 
   const userIgnore = options?.ignore;
