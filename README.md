@@ -7,10 +7,10 @@ Vanilla OTel works, but the setup is verbose, the logger plumbing is awkward, an
 - **`setupOtel()`** — idempotent one-call bootstrap for traces + logs. Honors all standard `OTEL_EXPORTER_OTLP_*` env vars.
 - **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and is gated by a configurable `LOG_LEVEL`.
 - **`withSpan(name, attrs?, fn)`** — wrap any sync or async function in a span; errors are recorded and PII in the error message is scrubbed before being attached to span status.
-- **Automatic `fetch` tracing** — `setupOtel()` wraps `globalThis.fetch` so every outbound request gets a CLIENT span and W3C trace-context headers. On **Bun** this is the only fetch instrumentation that works — the standard `diagnostics_channel`-based OTel instrumentations emit nothing for Bun's native fetch — and it behaves identically on Node.
+- **Automatic `fetch` tracing** — `setupOtel()` instruments outbound `fetch` so every request gets a CLIENT span and W3C trace-context headers. On **Node** it uses the official `@opentelemetry/instrumentation-undici`; on **Bun** — whose native fetch emits nothing for the standard `diagnostics_channel`-based instrumentations — it wraps `globalThis.fetch`. Pass `instrumentFetch: { mode: "global" }` to force the wrap on both for identical spans.
 - **`sanitizeEmail` / `sanitizePhone` / `sanitizeErrorMessage`** — PII helpers you can reuse anywhere.
 
-OTLP/HTTP only (no gRPC, no proto). Works identically on Bun and Node ≥ 20.
+OTLP/HTTP only (no gRPC, no proto). Runs on Bun and Node ≥ 20.
 
 ## Install
 
@@ -49,7 +49,7 @@ If `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `endpoint` option) is unset, `setupOtel
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `setupOtel(options): OtelHandle`              | Boots OTLP/HTTP traces + logs. Idempotent. Returns `{ shutdown(): Promise<void> }`.                        |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
-| `instrumentFetch(options?): FetchInstrumentation` | Wraps `globalThis.fetch` for CLIENT spans + W3C propagation. Auto-enabled by `setupOtel` when traces are configured. Returns `{ unpatch() }`. |
+| `instrumentFetch(options?): FetchInstrumentation` | Low-level wrap of `globalThis.fetch` for CLIENT spans + W3C propagation. Returns `{ unpatch() }`. `setupOtel` calls this on Bun; on Node it prefers native undici. |
 | `createLogger(module): PhotonLogger`          | Returns `{ info, warn, error, debug }`. Each call emits to OTel + `console`, correlates to active span.    |
 | `setLogLevel(level): void`                    | Set the minimum level emitted (`debug`/`info`/`warn`/`error`/`silent`). `LOG_LEVEL` env still wins.        |
 | `getLogLevel(): LogLevel`                     | Current effective level after env / override / default resolution.                                        |
@@ -115,23 +115,43 @@ Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
 
 ## Automatic fetch instrumentation
 
-`setupOtel()` patches `globalThis.fetch` to emit a CLIENT span per outbound request, carrying
-W3C `traceparent` (and baggage) headers so traces continue across services. Each span is named by
-HTTP method (`GET`, `POST`, …) and carries `http.request.method`, `url.full`, `server.address`,
-`server.port`, and `http.response.status_code`; `4xx`/`5xx` responses and thrown network errors are
-marked `ERROR`. This covers **outbound** requests only — inbound `Bun.serve`/Elysia server spans are
-separate (see [Framework integration](#framework-integration)).
+`setupOtel()` instruments outbound `fetch` to emit a CLIENT span per request, carrying W3C
+`traceparent` (and baggage) headers so traces continue across services. Spans are named by HTTP
+method (`GET`, `POST`, …) and carry `http.request.method`, `url.full`, `server.address`,
+`server.port`, and `http.response.status_code`. This covers **outbound** requests only — inbound
+`Bun.serve`/Elysia server spans are separate (see [Framework integration](#framework-integration)).
 
-- **Default:** on when a traces endpoint is configured. Pass `instrumentFetch: false` to disable, or
-  `instrumentFetch: true` to force it on even without an endpoint.
-- **Filter URLs:** `instrumentFetch: { ignore: (url) => url.includes("/healthz") }`. Your own OTLP
+The strategy depends on the runtime (`mode: "auto"`, the default):
+
+- **Node** uses the official `@opentelemetry/instrumentation-undici` (Node's `fetch` is undici-backed).
+  It captures all undici traffic — not just `globalThis.fetch` — emits the full HTTP-client semantic
+  conventions (`url.scheme`, `url.path`, `network.peer.*`, `user_agent.original`, …), and never
+  monkey-patches the global. It ships as an optional dependency; if it isn't installed, the library
+  falls back to the global wrap.
+- **Bun** wraps `globalThis.fetch` directly. Bun's native `fetch` emits no `diagnostics_channel`
+  events, so `@opentelemetry/instrumentation-undici` / `-http` produce no spans there — wrapping the
+  global is the only mechanism that works.
+
+Options (`instrumentFetch`):
+
+- **`true` / `false`:** force on (even without an endpoint) / off. Defaults to on when a traces
+  endpoint is configured.
+- **`mode`:** `"auto"` (default — native on Node, wrap on Bun) or `"global"` (wrap on both runtimes).
+  Choose `"global"` when you want identical spans everywhere and the built-in PII scrubbing of error
+  messages kept on Node (see caveats).
+- **`ignore`:** `instrumentFetch: { ignore: (url) => url.includes("/healthz") }`. Your own OTLP
   endpoint is always excluded automatically, so the exporter never traces itself.
-- **Why Bun needs this:** Bun's native `fetch` emits no `diagnostics_channel` events, so
-  `@opentelemetry/instrumentation-undici` / `-http` — and `opentelemetry-instrumentation-fetch-node`,
-  which is itself `diagnostics_channel`-based — produce no spans. Wrapping the global is the only
-  mechanism that works, and it behaves identically on Node.
-- **Caveat:** `url.full` includes the query string. If your URLs carry secrets there, use `ignore`
-  or redact upstream.
+
+Caveats:
+
+- **Telemetry differs by runtime under `"auto"`.** undici (Node) emits richer attributes and follows
+  HTTP semconv for span status — a 2xx client span is left `UNSET`, and only `5xx`/network failures are
+  marked `ERROR`; the Bun wrap marks all `4xx`/`5xx` as `ERROR`. The Bun wrap also scrubs PII from the
+  error message attached to span status — **undici does not**. Use `mode: "global"` for parity.
+- **`url.full` includes the query string** on both. If your URLs carry secrets there, use `ignore` or
+  redact upstream.
+- **Native fetch tracing needs Node ≥ 20.6** (the undici instrumentation's floor); older 20.x falls
+  back to the global wrap.
 
 `setupOtel()` also installs a global W3C trace-context + baggage propagator (previously none was
 registered) — that is what makes the outbound `traceparent` injection, and any manual propagation,
@@ -148,6 +168,8 @@ node --experimental-strip-types src/server.ts
 ```
 
 The package uses `process.env` (not `Bun.env`) and `AsyncLocalStorageContextManager` (backed by `async_hooks`), both of which are supported natively by Bun and Node ≥ 20.
+
+The one runtime-specific behavior is fetch instrumentation — native undici on Node, a `globalThis.fetch` wrap on Bun (see [Automatic fetch instrumentation](#automatic-fetch-instrumentation)). Set `instrumentFetch: { mode: "global" }` for identical behavior on both.
 
 For Bun consumers, the `exports` map points at the TypeScript source via the `bun` condition for faster cold starts during dev. Node consumers get the pre-built ESM bundle.
 

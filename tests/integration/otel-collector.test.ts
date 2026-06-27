@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createLogger } from "../../src/logger";
+import { IS_BUN } from "../../src/runtime";
 import { sanitizeEmail, sanitizeErrorMessage } from "../../src/sanitize";
 import { setupOtel } from "../../src/setup";
 import { PHOTON_OTEL_VERSION } from "../../src/version";
@@ -275,10 +276,10 @@ beforeAll(async () => {
   // Standalone error log carrying exception.* attributes.
   log.error("integration error log", { code: "E_TEST" }, new Error("boom"));
 
-  // Outbound fetch: setupOtel auto-instruments globalThis.fetch, so this emits
-  // a CLIENT span parented to the active span. A local server is the target so
-  // the test never touches the network; the nonce in the path makes the span
-  // identifiable by `url.full`.
+  // Outbound fetch: setupOtel auto-instruments fetch (native undici on Node,
+  // globalThis.fetch wrap on Bun), so this emits a CLIENT span parented to the
+  // active span. A local server is the target so the test never touches the
+  // network; the nonce in the path makes the span identifiable by `url.full`.
   const target = createServer((_req, res) => {
     res.statusCode = 200;
     res.end("ok");
@@ -376,9 +377,18 @@ describe("real OTLP/HTTP round-trip to an OpenTelemetry Collector", () => {
     expect(span?.attributes["http.request.method"]).toBe("GET");
     expect(span?.attributes["server.address"]).toBe("127.0.0.1");
     expect(span?.attributes["http.response.status_code"]).toBe(200);
-    expect(isOkStatus(span?.status)).toBe(true);
     expect(span?.resource["service.name"]).toBe(SERVICE_NAME);
     expect(span?.resource["test.nonce"]).toBe(nonce);
+    // A 200 is never an error on either runtime.
+    expect(isErrorStatus(span?.status)).toBe(false);
+    if (IS_BUN) {
+      // The global-fetch wrap sets OK explicitly.
+      expect(isOkStatus(span?.status)).toBe(true);
+    } else {
+      // Native undici follows HTTP semconv (2xx status left UNSET) and records
+      // url.scheme — which the wrap does not — proving the Node leg used undici.
+      expect(span?.attributes["url.scheme"]).toBe("http");
+    }
   });
 
   it("parents the fetch span under the active span (shared trace + parent id)", () => {

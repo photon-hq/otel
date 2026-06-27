@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { IS_BUN } from "../src/runtime";
 import { isOtelActive, setupOtel } from "../src/setup";
 
 const ENV_KEYS = [
@@ -66,6 +67,28 @@ describe("setupOtel", () => {
       const handle = setupOtel({
         serviceName: "fetch-on",
         endpoint: "https://otel.example.com",
+      });
+      // Bun can only instrument fetch by wrapping the global. Node (mode
+      // "auto") uses the native undici instrumentation, which leaves
+      // globalThis.fetch untouched. Either way, shutdown restores the original.
+      if (IS_BUN) {
+        expect(globalThis.fetch).not.toBe(original);
+      }
+      expect(handle).toBeDefined();
+      await handle.shutdown();
+      expect(globalThis.fetch).toBe(original);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("mode 'global' wraps globalThis.fetch on any runtime", async () => {
+    const original = globalThis.fetch;
+    try {
+      const handle = setupOtel({
+        serviceName: "fetch-global",
+        endpoint: "https://otel.example.com",
+        instrumentFetch: { mode: "global" },
       });
       expect(globalThis.fetch).not.toBe(original);
       await handle.shutdown();

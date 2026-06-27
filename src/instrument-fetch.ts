@@ -25,6 +25,21 @@ export interface InstrumentFetchOptions {
    * query string. The request is still performed — only the span is skipped.
    */
   ignore?: (url: string) => boolean;
+  /**
+   * Which fetch-instrumentation strategy `setupOtel()` should use:
+   * - `"auto"` (default): the official `@opentelemetry/instrumentation-undici`
+   *   on Node (richer HTTP-client semantic conventions, captures all undici
+   *   traffic, no global monkey-patch), and the `globalThis.fetch` wrap on Bun
+   *   (the only thing that works there).
+   * - `"global"`: always wrap `globalThis.fetch` on both runtimes. Produces
+   *   identical spans everywhere and keeps the built-in PII scrubbing of error
+   *   messages, at the cost of the richer Node attributes. Use this when you
+   *   want Bun and Node telemetry to match exactly.
+   *
+   * Only consulted by `setupOtel()`. Calling `instrumentFetch()` directly always
+   * performs a global wrap regardless of this field.
+   */
+  mode?: "auto" | "global";
 }
 
 export interface FetchInstrumentation {
