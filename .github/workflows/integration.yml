@@ -31,6 +31,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: bun install --frozen-lockfile
 
+      # The OTEL_INSTRUMENT_FETCH=false case runs in a child process that imports
+      # the built bundle (so it runs unchanged under both node and bun).
+      - name: Build
+        run: bun run build
+
       - name: Start OTel Collector
         working-directory: tests/integration
         run: |

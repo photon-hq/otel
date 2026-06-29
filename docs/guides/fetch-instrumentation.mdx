@@ -19,6 +19,22 @@ When a traces endpoint is configured, setup instruments fetch by default. The st
 
 The standalone `instrumentFetch()` export always performs the `globalThis.fetch` wrap, and `createInstrumentedFetch()` wraps a single fetch instance (for SDKs) without touching the global.
 
+## Enabling and disabling
+
+Pass `instrumentFetch: false` to turn it off, or `true` to force it on even without an endpoint:
+
+```ts
+setupOtel({ serviceName: "orders-api", instrumentFetch: false });
+```
+
+The `OTEL_INSTRUMENT_FETCH` environment variable overrides both the option and the default — `true` / `1` forces it on, `false` / `0` disables it. Because env wins over code (matching the rest of the package's configuration), you can silence noisy or expensive fetch spans in production without changing application code:
+
+```bash
+OTEL_INSTRUMENT_FETCH=false
+```
+
+The env var only flips the on/off decision; when instrumentation stays on, the object form still applies — `OTEL_INSTRUMENT_FETCH=true` alongside `instrumentFetch: { mode: "global", ignore }` keeps your `mode` and `ignore`.
+
 ## What each fetch span contains
 
 For an outbound request, fetch instrumentation creates a span with:
@@ -124,6 +140,8 @@ This matters because some runtimes or exporter versions may use fetch internally
 If fetch is already wrapped by this package, a second call does not stack another wrapper.
 
 The implementation uses a global symbol marker to remember the original fetch. That guard works even if two copies of the package are loaded, such as Bun consuming TypeScript source while another path consumes the built ESM bundle.
+
+`setupOtel()` is idempotent too: the first call wins, so a later `setupOtel({ instrumentFetch: false })` cannot turn off instrumentation that an earlier call already enabled. Decide on the first call, or use `OTEL_INSTRUMENT_FETCH`, which is read whenever setup actually runs.
 
 ## Restoring fetch
 

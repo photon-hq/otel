@@ -21,8 +21,11 @@ docker compose up -d
 # 2. Wait until it's healthy
 curl -sf http://localhost:13133/ >/dev/null && echo healthy
 
-# 3. Run the test from the repo root
+# 3. Build, then run the test from the repo root. The build is required: the
+#    OTEL_INSTRUMENT_FETCH=false case runs in a child process that imports the
+#    built bundle (dist/) so it runs identically under node and bun.
 cd ../..
+bun run build
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run test:integration
 
 # (optional) eyeball the raw telemetry the collector received
@@ -48,5 +51,10 @@ unset, so step 3 works without the env var too. Output files land in
 - The test tags every span/log with a unique per-run nonce, calls
   `handle.shutdown()` to flush the batch processors over the wire, then polls
   the output files until its telemetry arrives before asserting.
+- The `OTEL_INSTRUMENT_FETCH=false` case is driven by `disabled-fetch.child.mjs`
+  in a separate process (`setupOtel` is process-global and idempotent, so it
+  can't share the main run's process). The parent spawns it with the current
+  runtime and then asserts the collector received the child's control span but
+  no fetch CLIENT span.
 
 This is the same flow CI runs in `.github/workflows/integration.yml`.

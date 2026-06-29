@@ -113,6 +113,7 @@ Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
 | `OTEL_EXPORTER_OTLP_HEADERS`              | `key=value,key=value` headers; merged with `options.headers` (env wins). |
 | `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`. Also drives the default log level. |
 | `LOG_LEVEL`                               | Minimum log level: `debug` \| `info` \| `warn` \| `error` \| `silent`. Overrides `setLogLevel()` / `setupOtel({ logLevel })`. |
+| `OTEL_INSTRUMENT_FETCH`                   | Toggle outbound `fetch` tracing: `true` / `1` on, `false` / `0` off. Overrides `instrumentFetch` and the default. |
 
 ## Automatic fetch instrumentation
 
@@ -136,7 +137,8 @@ The strategy depends on the runtime (`mode: "auto"`, the default):
 Options (`instrumentFetch`):
 
 - **`true` / `false`:** force on (even without an endpoint) / off. Defaults to on when a traces
-  endpoint is configured.
+  endpoint is configured. The `OTEL_INSTRUMENT_FETCH` env var overrides this (`true`/`1` to force on,
+  `false`/`0` to disable) — toggle fetch tracing in production without a code change.
 - **`mode`:** `"auto"` (default — native on Node, wrap on Bun) or `"global"` (wrap on both runtimes).
   Choose `"global"` when you want identical spans everywhere and the built-in PII scrubbing of error
   messages kept on Node (see caveats).
