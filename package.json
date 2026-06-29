@@ -1,6 +1,6 @@
 {
   "name": "@photon-ai/otel",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "DX-focused OpenTelemetry wrapper for Bun and Node.js: one-call setup, structured logging, span helper, and built-in PII scrubbing.",
   "type": "module",
   "main": "./dist/index.js",
