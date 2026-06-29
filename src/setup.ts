@@ -48,7 +48,9 @@ export interface SetupOtelOptions {
    *
    * `true` enables with defaults; pass an object to filter URLs via `ignore`.
    * Defaults to enabled when a traces endpoint is configured. Pass `false` to
-   * disable.
+   * disable. The `OTEL_INSTRUMENT_FETCH` env var takes precedence (`true`/`1`
+   * to force on, `false`/`0` to disable), matching the rest of the package's
+   * env-wins config.
    */
   instrumentFetch?: boolean | InstrumentFetchOptions;
   /**
@@ -91,6 +93,23 @@ function parseEnvHeaders(raw: string | undefined): Record<string, string> {
     }
   }
   return out;
+}
+
+/**
+ * Parse a boolean-ish env var. Returns `undefined` for unset or unrecognized
+ * values so the caller can fall through to its code option — mirroring how
+ * `logger.ts`'s `envLevel()` defers on values it doesn't recognize. Accepts
+ * `true`/`1` and `false`/`0` (case- and whitespace-insensitive).
+ */
+function parseBooleanEnv(raw: string | undefined): boolean | undefined {
+  const value = raw?.trim().toLowerCase();
+  if (value === "true" || value === "1") {
+    return true;
+  }
+  if (value === "false" || value === "0") {
+    return false;
+  }
+  return;
 }
 
 function resolveTracesEndpoint(base: string | undefined): string | undefined {
@@ -145,7 +164,9 @@ function otlpEndpointKeysOf(
 
 /**
  * Start fetch instrumentation unless disabled. Defaults to on when a traces
- * pipeline is configured. On Node (mode `"auto"`) this registers the native
+ * pipeline is configured; the `OTEL_INSTRUMENT_FETCH` env var (`true`/`1` |
+ * `false`/`0`) overrides both the option and that default. On Node (mode
+ * `"auto"`) this registers the native
  * `@opentelemetry/instrumentation-undici`; on Bun, or with mode `"global"`, it
  * wraps `globalThis.fetch`. Always excludes our own OTLP endpoints so the
  * exporter's traffic is never self-traced (matters on Node, where the OTLP
@@ -157,7 +178,11 @@ function startFetchInstrumentation(
   tracesEndpoint: string | undefined,
   logsEndpoint: string | undefined
 ): FetchInstrumentation | undefined {
-  const want = option ?? hasTraces;
+  // Env wins over code (and over the smart default), matching the rest of the
+  // package's config story. The env value only drives the on/off decision; the
+  // object form below still configures *how* fetch is instrumented when on.
+  const envWant = parseBooleanEnv(process.env.OTEL_INSTRUMENT_FETCH);
+  const want = envWant ?? option ?? hasTraces;
   if (!want) {
     return;
   }
