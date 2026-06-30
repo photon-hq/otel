@@ -1,5 +1,6 @@
 import { context as otelContext } from "@opentelemetry/api";
-import { type Logger, logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { SeverityNumber } from "@opentelemetry/api-logs";
+import { resolveLogger } from "./scope";
 import { PHOTON_OTEL_VERSION } from "./version";
 
 export type LogAttrs = Record<string, string | number | boolean | undefined>;
@@ -57,15 +58,6 @@ export function setLogLevel(level: LogLevel): void {
 /** Current effective log level, after env / override / default resolution. */
 export function getLogLevel(): LogLevel {
   return resolveLevel();
-}
-
-let scopedLogger: Logger | undefined;
-
-function getLogger(): Logger {
-  if (!scopedLogger) {
-    scopedLogger = logs.getLogger("@photon-ai/otel", PHOTON_OTEL_VERSION);
-  }
-  return scopedLogger;
 }
 
 function filterUndefined(
@@ -129,7 +121,7 @@ function emit(
     attributes["exception.message"] = String(error);
   }
 
-  getLogger().emit({
+  resolveLogger("@photon-ai/otel", PHOTON_OTEL_VERSION).emit({
     severityNumber,
     severityText,
     body: message,

@@ -4,8 +4,6 @@ import {
   propagation,
   SpanKind,
   SpanStatusCode,
-  type Tracer,
-  trace,
 } from "@opentelemetry/api";
 import {
   ATTR_ERROR_TYPE,
@@ -16,6 +14,7 @@ import {
   ATTR_URL_FULL,
 } from "@opentelemetry/semantic-conventions";
 import { sanitizeErrorMessage } from "./sanitize";
+import { resolveTracer } from "./scope";
 import { PHOTON_OTEL_VERSION } from "./version";
 
 export interface FetchSpanOptions {
@@ -71,15 +70,6 @@ const PATCH_MARKER = Symbol.for("@photon-ai/otel.fetch.original");
 
 const HTTP_ERROR_STATUS_MIN = 400;
 const DEFAULT_PORTS: Record<string, number> = { "https:": 443, "http:": 80 };
-
-let scopedTracer: Tracer | undefined;
-
-function getTracer(): Tracer {
-  if (!scopedTracer) {
-    scopedTracer = trace.getTracer("@photon-ai/otel", PHOTON_OTEL_VERSION);
-  }
-  return scopedTracer;
-}
 
 function setGlobalFetch(fn: FetchFn): void {
   // `preconnect` (Bun) is copied onto wrappers by preserveProps; the cast just
@@ -201,44 +191,43 @@ function buildWrappedFetch(
       return original(input, init);
     }
     const name = method.toUpperCase();
-    return getTracer().startActiveSpan(
-      name,
-      { kind: SpanKind.CLIENT },
-      async (span) => {
-        if (staticAttributes) {
-          span.setAttributes(staticAttributes);
-        }
-        span.setAttributes(fetchAttributes(name, url));
-        try {
-          const headers = buildPropagatedHeaders(input, init);
-          const response = await callOriginal(original, input, init, headers);
-          span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
-          span.setStatus({
-            code:
-              response.status >= HTTP_ERROR_STATUS_MIN
-                ? SpanStatusCode.ERROR
-                : SpanStatusCode.OK,
-          });
-          return response;
-        } catch (err) {
-          span.recordException(err as Error);
-          const errorObj = err instanceof Error ? err : undefined;
-          span.setAttribute(
-            ATTR_ERROR_TYPE,
-            errorObj?.constructor.name ?? typeof err
-          );
-          span.setStatus({
-            code: SpanStatusCode.ERROR,
-            message: errorObj
-              ? sanitizeErrorMessage(errorObj.message)
-              : sanitizeErrorMessage(String(err)),
-          });
-          throw err;
-        } finally {
-          span.end();
-        }
+    return resolveTracer(
+      "@photon-ai/otel",
+      PHOTON_OTEL_VERSION
+    ).startActiveSpan(name, { kind: SpanKind.CLIENT }, async (span) => {
+      if (staticAttributes) {
+        span.setAttributes(staticAttributes);
       }
-    );
+      span.setAttributes(fetchAttributes(name, url));
+      try {
+        const headers = buildPropagatedHeaders(input, init);
+        const response = await callOriginal(original, input, init, headers);
+        span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
+        span.setStatus({
+          code:
+            response.status >= HTTP_ERROR_STATUS_MIN
+              ? SpanStatusCode.ERROR
+              : SpanStatusCode.OK,
+        });
+        return response;
+      } catch (err) {
+        span.recordException(err as Error);
+        const errorObj = err instanceof Error ? err : undefined;
+        span.setAttribute(
+          ATTR_ERROR_TYPE,
+          errorObj?.constructor.name ?? typeof err
+        );
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: errorObj
+            ? sanitizeErrorMessage(errorObj.message)
+            : sanitizeErrorMessage(String(err)),
+        });
+        throw err;
+      } finally {
+        span.end();
+      }
+    });
   };
 }
 

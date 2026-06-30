@@ -1,21 +1,8 @@
-import {
-  type Attributes,
-  SpanStatusCode,
-  type Tracer,
-  trace,
-} from "@opentelemetry/api";
+import { type Attributes, SpanStatusCode } from "@opentelemetry/api";
 import type { LogAttrs } from "./logger";
 import { sanitizeErrorMessage } from "./sanitize";
+import { resolveTracer } from "./scope";
 import { PHOTON_OTEL_VERSION } from "./version";
-
-let scopedTracer: Tracer | undefined;
-
-function getTracer(): Tracer {
-  if (!scopedTracer) {
-    scopedTracer = trace.getTracer("@photon-ai/otel", PHOTON_OTEL_VERSION);
-  }
-  return scopedTracer;
-}
 
 function toAttributes(attrs: LogAttrs): Attributes {
   const out: Attributes = {};
@@ -44,27 +31,33 @@ export function withSpan<T>(
   }
   const attrs = typeof attrsOrFn === "function" ? undefined : attrsOrFn;
 
-  return getTracer().startActiveSpan(name, async (span) => {
-    if (attrs) {
-      span.setAttributes(toAttributes(attrs));
+  return resolveTracer("@photon-ai/otel", PHOTON_OTEL_VERSION).startActiveSpan(
+    name,
+    async (span) => {
+      if (attrs) {
+        span.setAttributes(toAttributes(attrs));
+      }
+      try {
+        const result = await fn();
+        span.setStatus({ code: SpanStatusCode.OK });
+        return result;
+      } catch (err) {
+        span.recordException(err as Error);
+        const errorObj = err instanceof Error ? err : undefined;
+        span.setAttribute(
+          "error.type",
+          errorObj?.constructor.name ?? typeof err
+        );
+        span.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: errorObj
+            ? sanitizeErrorMessage(errorObj.message)
+            : sanitizeErrorMessage(String(err)),
+        });
+        throw err;
+      } finally {
+        span.end();
+      }
     }
-    try {
-      const result = await fn();
-      span.setStatus({ code: SpanStatusCode.OK });
-      return result;
-    } catch (err) {
-      span.recordException(err as Error);
-      const errorObj = err instanceof Error ? err : undefined;
-      span.setAttribute("error.type", errorObj?.constructor.name ?? typeof err);
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: errorObj
-          ? sanitizeErrorMessage(errorObj.message)
-          : sanitizeErrorMessage(String(err)),
-      });
-      throw err;
-    } finally {
-      span.end();
-    }
-  });
+  );
 }

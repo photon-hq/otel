@@ -1,6 +1,11 @@
 import { createRequire } from "node:module";
-import { context, propagation, trace } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import {
+  context,
+  propagation,
+  type TracerProvider,
+  trace,
+} from "@opentelemetry/api";
+import { type LoggerProvider, logs } from "@opentelemetry/api-logs";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import {
   CompositePropagator,
@@ -12,7 +17,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   BatchLogRecordProcessor,
-  LoggerProvider,
+  LoggerProvider as SdkLoggerProvider,
 } from "@opentelemetry/sdk-logs";
 import {
   BasicTracerProvider,
@@ -26,6 +31,7 @@ import {
 import { instrumentFetchNative } from "./instrument-fetch-native";
 import { type LogLevel, setLogLevel } from "./logger";
 import { IS_BUN } from "./runtime";
+import { clearActiveProviders, setActiveProviders } from "./scope";
 
 export interface SetupOtelOptions {
   /**
@@ -48,9 +54,8 @@ export interface SetupOtelOptions {
    *
    * `true` enables with defaults; pass an object to filter URLs via `ignore`.
    * Defaults to enabled when a traces endpoint is configured. Pass `false` to
-   * disable. The `OTEL_INSTRUMENT_FETCH` env var takes precedence (`true`/`1`
-   * to force on, `false`/`0` to disable), matching the rest of the package's
-   * env-wins config.
+   * disable. In scoped mode (`register: false`) it defaults to disabled — use
+   * `createInstrumentedFetch()` per client instead of wrapping the global.
    */
   instrumentFetch?: boolean | InstrumentFetchOptions;
   /**
@@ -59,6 +64,18 @@ export interface SetupOtelOptions {
    * development and `info` otherwise.
    */
   logLevel?: LogLevel;
+  /**
+   * Whether to register this pipeline as the process-global OpenTelemetry
+   * tracer/logger providers. Defaults to `true` (the convenient app-level
+   * setup). Set to `false` for **scoped** mode: the library keeps its own
+   * providers and routes `withSpan` / `createLogger` / `createInstrumentedFetch`
+   * through them, but leaves the host app's global tracer/logger providers
+   * untouched — so an embedded library can emit telemetry without taking over
+   * the host's OpenTelemetry. The shared context manager and W3C propagator are
+   * still installed if absent (needed for span nesting and trace propagation),
+   * and auto fetch instrumentation defaults off (see `instrumentFetch`).
+   */
+  register?: boolean;
   /**
    * Extra resource attributes attached to every span/log alongside
    * `service.name` / `service.version`.
@@ -69,7 +86,15 @@ export interface SetupOtelOptions {
 }
 
 export interface OtelHandle {
+  /** The logger provider this setup built (private in scoped mode). */
+  loggerProvider: LoggerProvider;
   shutdown(): Promise<void>;
+  /**
+   * The tracer provider this setup built. In scoped mode it is the library's
+   * private provider (not the global one), so embedders can build extra tracers
+   * or attach processors against it.
+   */
+  tracerProvider: TracerProvider;
 }
 
 let activeHandle: OtelHandle | undefined;
@@ -93,23 +118,6 @@ function parseEnvHeaders(raw: string | undefined): Record<string, string> {
     }
   }
   return out;
-}
-
-/**
- * Parse a boolean-ish env var. Returns `undefined` for unset or unrecognized
- * values so the caller can fall through to its code option — mirroring how
- * `logger.ts`'s `envLevel()` defers on values it doesn't recognize. Accepts
- * `true`/`1` and `false`/`0` (case- and whitespace-insensitive).
- */
-function parseBooleanEnv(raw: string | undefined): boolean | undefined {
-  const value = raw?.trim().toLowerCase();
-  if (value === "true" || value === "1") {
-    return true;
-  }
-  if (value === "false" || value === "0") {
-    return false;
-  }
-  return;
 }
 
 function resolveTracesEndpoint(base: string | undefined): string | undefined {
@@ -164,25 +172,25 @@ function otlpEndpointKeysOf(
 
 /**
  * Start fetch instrumentation unless disabled. Defaults to on when a traces
- * pipeline is configured; the `OTEL_INSTRUMENT_FETCH` env var (`true`/`1` |
- * `false`/`0`) overrides both the option and that default. On Node (mode
- * `"auto"`) this registers the native
- * `@opentelemetry/instrumentation-undici`; on Bun, or with mode `"global"`, it
- * wraps `globalThis.fetch`. Always excludes our own OTLP endpoints so the
- * exporter's traffic is never self-traced (matters on Node, where the OTLP
- * exporter can use fetch).
+ * pipeline is configured, except in scoped mode (`register: false`) where it
+ * defaults off. On Node (mode `"auto"`) this registers the native
+ * `@opentelemetry/instrumentation-undici`; on Bun, with mode `"global"`, or in
+ * scoped mode, it wraps `globalThis.fetch` (native can only read the global
+ * tracer provider, so scoped mode can't use it). Always excludes our own OTLP
+ * endpoints so the exporter's traffic is never self-traced (matters on Node,
+ * where the OTLP exporter can use fetch).
  */
 function startFetchInstrumentation(
   option: boolean | InstrumentFetchOptions | undefined,
+  register: boolean,
   hasTraces: boolean,
   tracesEndpoint: string | undefined,
   logsEndpoint: string | undefined
 ): FetchInstrumentation | undefined {
-  // Env wins over code (and over the smart default), matching the rest of the
-  // package's config story. The env value only drives the on/off decision; the
-  // object form below still configures *how* fetch is instrumented when on.
-  const envWant = parseBooleanEnv(process.env.OTEL_INSTRUMENT_FETCH);
-  const want = envWant ?? option ?? hasTraces;
+  // Scoped mode (register === false) never auto-enables: native undici can't
+  // target the library's held provider, and wrapping globalThis.fetch is
+  // process-wide. An explicit `option` still turns it on (forced onto the wrap).
+  const want = option ?? (register && hasTraces);
   if (!want) {
     return;
   }
@@ -196,9 +204,10 @@ function startFetchInstrumentation(
 
   // "auto" (default) prefers Node's native undici instrumentation; "global"
   // forces the globalThis.fetch wrap. Native never applies on Bun, whose fetch
-  // emits no diagnostics_channel events. Fall back to the wrap when the optional
-  // undici packages aren't installed, so Node still gets fetch spans.
-  if ((userOptions?.mode ?? "auto") === "auto" && !IS_BUN) {
+  // emits no diagnostics_channel events, nor in scoped mode (it reads the global
+  // provider, which scoped mode doesn't set). Fall back to the wrap when the
+  // optional undici packages aren't installed, so Node still gets fetch spans.
+  if (register && (userOptions?.mode ?? "auto") === "auto" && !IS_BUN) {
     const native = instrumentFetchNative(
       { ...userOptions, ignore },
       createRequire(import.meta.url)
@@ -220,6 +229,11 @@ function startFetchInstrumentation(
  * call, so libraries can safely invoke this without clobbering an app-level
  * OTel setup that ran earlier.
  *
+ * Registers the global tracer/logger providers by default; pass
+ * `register: false` for scoped mode, which keeps the library's own providers
+ * and leaves the host app's global OpenTelemetry untouched (see
+ * `SetupOtelOptions.register`).
+ *
  * Standard `OTEL_EXPORTER_OTLP_*` env vars override the `endpoint` and
  * `headers` arguments — this matches the OpenTelemetry SDK config spec.
  */
@@ -227,6 +241,8 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
   if (activeHandle) {
     return activeHandle;
   }
+
+  const register = options.register !== false;
 
   if (options.logLevel) {
     setLogLevel(options.logLevel);
@@ -249,6 +265,10 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
     ...options.resourceAttributes,
   });
 
+  // Context manager + propagator are shared, process-global infrastructure (not
+  // data routing), and the API rejects a duplicate registration — so these are
+  // effectively set-if-absent. Scoped mode still wants them present for span
+  // nesting and W3C propagation, sharing the host's if it already installed one.
   context.setGlobalContextManager(new AsyncLocalStorageContextManager());
   propagation.setGlobalPropagator(
     new CompositePropagator({
@@ -274,10 +294,13 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
     resource,
     spanProcessors: traceProcessors,
   });
-  trace.setGlobalTracerProvider(tracerProvider);
+  if (register) {
+    trace.setGlobalTracerProvider(tracerProvider);
+  }
 
   const fetchInstrumentation = startFetchInstrumentation(
     options.instrumentFetch,
+    register,
     traceProcessors.length > 0,
     tracesEndpoint,
     logsEndpoint
@@ -294,19 +317,29 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
       ]
     : [];
 
-  const loggerProvider = new LoggerProvider({
+  const loggerProvider = new SdkLoggerProvider({
     resource,
     processors: logProcessors,
   });
-  logs.setGlobalLoggerProvider(loggerProvider);
+  if (register) {
+    logs.setGlobalLoggerProvider(loggerProvider);
+  }
+
+  // Route the library's own helpers (withSpan / createLogger / the fetch wrap)
+  // through these providers in both modes, so scoped mode emits into them while
+  // the host app's global providers stay untouched.
+  setActiveProviders({ tracerProvider, loggerProvider });
 
   const handle: OtelHandle = {
+    tracerProvider,
+    loggerProvider,
     async shutdown() {
       fetchInstrumentation?.unpatch();
       await Promise.allSettled([
         tracerProvider.shutdown(),
         loggerProvider.shutdown(),
       ]);
+      clearActiveProviders();
       activeHandle = undefined;
     },
   };
