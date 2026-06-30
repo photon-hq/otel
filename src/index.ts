@@ -15,9 +15,11 @@ export {
   setLogLevel,
 } from "./logger";
 export {
+  type SanitizeUrlOptions,
   sanitizeEmail,
   sanitizeErrorMessage,
   sanitizePhone,
+  sanitizeUrl,
 } from "./sanitize";
 export {
   isOtelActive,

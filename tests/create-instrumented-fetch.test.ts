@@ -26,6 +26,7 @@ import {
   it,
 } from "vitest";
 import { createInstrumentedFetch } from "../src/instrument-fetch";
+import { sanitizeUrl } from "../src/sanitize";
 
 const exporter = new InMemorySpanExporter();
 const TRACEPARENT = /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/;
@@ -154,6 +155,19 @@ describe("createInstrumentedFetch", () => {
     const span = spanByName("GET");
     expect(span?.attributes["peer.service"]).toBe("openai");
     expect(span?.attributes["http.request.method"]).toBe("GET");
+  });
+
+  it("redacts url.full via redactUrl", async () => {
+    const instrumented = createInstrumentedFetch(makeFakeFetch(), {
+      redactUrl: (url) => sanitizeUrl(url, { params: ["token"] }),
+    });
+    await instrumented("https://api.example.com/x?token=secret&status=200");
+
+    const span = spanByName("GET");
+    expect(span?.attributes["url.full"]).toBe(
+      "https://api.example.com/x?token=REDACTED&status=200"
+    );
+    expect(span?.attributes["server.address"]).toBe("api.example.com");
   });
 
   it("is idempotent — wrapping an instrumented fetch returns it unchanged", async () => {

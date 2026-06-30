@@ -153,4 +153,4 @@ Then verify:
 | Fetch spans missing | no traces endpoint or `instrumentFetch: false` | configure trace endpoint or force `instrumentFetch: true` |
 | Logs not correlated with traces | setup ran too late or context was replaced | call `setupOtel()` before work begins |
 | Process exits before telemetry appears | batch processors did not flush | await `shutdown()` |
-| Sensitive query values visible | fetch spans record `url.full` | remove sensitive query strings or ignore those URLs |
+| Sensitive query values visible | fetch spans record `url.full` | strip them with the `redactUrl` option (`sanitizeUrl()` helper), or `ignore` the URL |

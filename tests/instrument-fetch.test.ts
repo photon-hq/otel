@@ -26,6 +26,7 @@ import {
   it,
 } from "vitest";
 import { instrumentFetch } from "../src/instrument-fetch";
+import { sanitizeUrl } from "../src/sanitize";
 
 const exporter = new InMemorySpanExporter();
 const TRACEPARENT = /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/;
@@ -236,6 +237,26 @@ describe("instrumentFetch", () => {
     expect(exporter.getFinishedSpans()).toHaveLength(0);
     expect(captured).toHaveLength(1);
     expect(captured[0]?.headers.traceparent).toBeUndefined();
+  });
+
+  it("redacts url.full via redactUrl but keeps server.* and the real request URL", async () => {
+    instrumentFetch({
+      redactUrl: (url) => sanitizeUrl(url, { params: ["token"] }),
+    });
+    await fetch(
+      "https://api.example.com:8443/v1/things?token=secret&status=200"
+    );
+
+    const span = spanByName("GET");
+    expect(span?.attributes["url.full"]).toBe(
+      "https://api.example.com:8443/v1/things?token=REDACTED&status=200"
+    );
+    expect(span?.attributes["server.address"]).toBe("api.example.com");
+    expect(span?.attributes["server.port"]).toBe(8443);
+    // The real request still uses the original, unredacted URL.
+    expect(captured[0]?.url).toBe(
+      "https://api.example.com:8443/v1/things?token=secret&status=200"
+    );
   });
 
   it("does not double-wrap on repeated calls", async () => {
