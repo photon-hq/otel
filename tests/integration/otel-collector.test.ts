@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -33,10 +32,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const outputDir = process.env.COLLECTOR_OUTPUT_DIR ?? join(here, "output");
 const tracesFile = join(outputDir, "traces.json");
 const logsFile = join(outputDir, "logs.json");
-// The OTEL_INSTRUMENT_FETCH=false case runs in a child process (see below); it
-// imports the built bundle, so the integration suite needs `bun run build`.
-const childScript = join(here, "disabled-fetch.child.mjs");
-const distEntry = join(here, "..", "..", "dist", "index.js");
 
 // Tag this run's telemetry so assertions match exactly our data even if the
 // collector's output files contain spans/logs from a previous run.
@@ -45,10 +40,6 @@ const happySpanName = `integration-happy-${nonce}`;
 const errorSpanName = `integration-error-${nonce}`;
 const fetchParentSpanName = `integration-fetch-parent-${nonce}`;
 const fetchMarker = `integration-fetch-${nonce}`;
-// Tags for the separate OTEL_INSTRUMENT_FETCH=false child run.
-const disabledNonce = `${nonce}-disabled`;
-const disabledParentSpanName = `integration-disabled-parent-${nonce}`;
-const disabledFetchMarker = `integration-disabled-fetch-${nonce}`;
 const rawEmail = "user@example.com";
 
 // --- OTLP/JSON shapes emitted by the collector's file exporter ---------------
@@ -163,7 +154,7 @@ function readLines(file: string): string[] {
     .filter((line) => line.length > 0);
 }
 
-function readSpans(targetNonce: string = nonce): CollectedSpan[] {
+function readSpans(): CollectedSpan[] {
   const spans: CollectedSpan[] = [];
   for (const line of readLines(tracesFile)) {
     let parsed: OtlpTracesData;
@@ -189,10 +180,9 @@ function readSpans(targetNonce: string = nonce): CollectedSpan[] {
       }
     }
   }
-  // Scope to a specific run: the file exporter appends across runs, and log
-  // bodies aren't unique, so filter by the per-run nonce carried on the
-  // resource. Defaults to the main enabled run; the child run passes its own.
-  return spans.filter((s) => s.resource["test.nonce"] === targetNonce);
+  // Scope to THIS run: the file exporter appends across runs, and log bodies
+  // aren't unique, so filter by the per-run nonce carried on the resource.
+  return spans.filter((s) => s.resource["test.nonce"] === nonce);
 }
 
 function readLogs(): CollectedLog[] {
@@ -252,51 +242,13 @@ function isErrorStatus(status: OtlpStatus | undefined): boolean {
 
 let spans: CollectedSpan[] = [];
 let logRecords: CollectedLog[] = [];
-let disabledSpans: CollectedSpan[] = [];
 let errorSpanRejected = false;
-
-/**
- * Run the OTEL_INSTRUMENT_FETCH=false scenario in its own process (clean global
- * OTel state) under the SAME runtime as the suite (`process.execPath`), so the
- * disable is verified end-to-end on whichever of Bun/Node is running. Resolves
- * when the child exits 0; rejects on spawn error or a non-zero exit.
- */
-function runDisabledFetchChild(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [childScript], {
-      stdio: "inherit",
-      env: {
-        ...process.env,
-        OTEL_INSTRUMENT_FETCH: "false",
-        OTEL_EXPORTER_OTLP_ENDPOINT:
-          process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "http://localhost:4318",
-        CHILD_NONCE: disabledNonce,
-        CHILD_PARENT_SPAN: disabledParentSpanName,
-        CHILD_FETCH_MARKER: disabledFetchMarker,
-      },
-    });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`disabled-fetch child exited with code ${code}`));
-      }
-    });
-  });
-}
 
 beforeAll(async () => {
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??= "http://localhost:4318";
   // Keep level resolution deterministic regardless of the CI environment
   // (LOG_LEVEL would otherwise win over the logLevel option below).
   delete process.env.LOG_LEVEL;
-
-  if (!existsSync(distEntry)) {
-    throw new Error(
-      `Missing ${distEntry}. The OTEL_INSTRUMENT_FETCH=false child imports the built bundle — run \`bun run build\` before the integration test.`
-    );
-  }
 
   const handle = setupOtel({
     serviceName: SERVICE_NAME,
@@ -347,11 +299,6 @@ beforeAll(async () => {
   // Flush the batch processors over the wire before reading the collector files.
   await handle.shutdown();
 
-  // Separately, drive the OTEL_INSTRUMENT_FETCH=false scenario in a clean child
-  // process (setupOtel is process-global and idempotent, so it can't share this
-  // process with the enabled run above).
-  await runDisabledFetchChild();
-
   spans = await pollUntil(
     readSpans,
     (items) =>
@@ -366,12 +313,6 @@ beforeAll(async () => {
     (items) =>
       items.some((r) => r.body === "hello from integration") &&
       items.some((r) => r.body === "integration error log")
-  );
-  // Wait for the child run's control (parent) span so that asserting the absence
-  // of a fetch span below is meaningful — the child's pipeline did deliver.
-  disabledSpans = await pollUntil(
-    () => readSpans(disabledNonce),
-    (items) => items.some((s) => s.name === disabledParentSpanName)
   );
 }, HOOK_TIMEOUT_MS);
 
@@ -458,24 +399,5 @@ describe("real OTLP/HTTP round-trip to an OpenTelemetry Collector", () => {
     expect(parent?.spanId).toBeTruthy();
     expect(fetchSpan?.traceId).toBe(parent?.traceId);
     expect(fetchSpan?.parentSpanId).toBe(parent?.spanId);
-  });
-
-  it("suppresses the fetch CLIENT span when OTEL_INSTRUMENT_FETCH=false", () => {
-    // Control: the child run's parent span DID reach the collector, so the
-    // absence of a fetch span is meaningful (the pipeline ran, just no fetch).
-    const parent = disabledSpans.find((s) => s.name === disabledParentSpanName);
-    expect(parent).toBeDefined();
-    // No CLIENT fetch span was emitted for the disabled run...
-    const fetchSpan = disabledSpans.find((s) =>
-      String(s.attributes["url.full"] ?? "").includes(disabledFetchMarker)
-    );
-    expect(fetchSpan).toBeUndefined();
-    // ...and the control span has no child spans at all (the fetch was its only
-    // call) — true on both runtimes: native undici on Node never registered, and
-    // the globalThis.fetch wrap on Bun was never installed.
-    const children = disabledSpans.filter(
-      (s) => s.parentSpanId === parent?.spanId
-    );
-    expect(children).toHaveLength(0);
   });
 });

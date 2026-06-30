@@ -7,7 +7,6 @@ const ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
   "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
   "OTEL_EXPORTER_OTLP_HEADERS",
-  "OTEL_INSTRUMENT_FETCH",
   "DEPLOYMENT_ENV",
 ] as const;
 
@@ -141,63 +140,6 @@ describe("setupOtel", () => {
       expect(globalThis.fetch).toBe(original);
       await handle.shutdown();
       expect(globalThis.fetch).toBe(original);
-    } finally {
-      globalThis.fetch = original;
-    }
-  });
-
-  it("OTEL_INSTRUMENT_FETCH=false disables fetch even with instrumentFetch: true", async () => {
-    process.env.OTEL_INSTRUMENT_FETCH = "false";
-    const original = globalThis.fetch;
-    try {
-      const handle = setupOtel({
-        serviceName: "env-fetch-off",
-        endpoint: "https://otel.example.com",
-        instrumentFetch: true,
-      });
-      // Env wins over the code option: neither strategy may activate.
-      expect(fetchInstrumentationActive()).toBe(false);
-      expect(globalThis.fetch).toBe(original);
-      await handle.shutdown();
-    } finally {
-      globalThis.fetch = original;
-    }
-  });
-
-  it("OTEL_INSTRUMENT_FETCH=true enables fetch even with instrumentFetch: false", async () => {
-    process.env.OTEL_INSTRUMENT_FETCH = "true";
-    const original = globalThis.fetch;
-    try {
-      const handle = setupOtel({
-        serviceName: "env-fetch-on",
-        endpoint: "https://otel.example.com",
-        instrumentFetch: false,
-      });
-      // Env wins over the code option: instrumentation is active despite the
-      // explicit opt-out.
-      expect(fetchInstrumentationActive()).toBe(true);
-      await handle.shutdown();
-      expect(fetchInstrumentationActive()).toBe(false);
-      expect(globalThis.fetch).toBe(original);
-    } finally {
-      globalThis.fetch = original;
-    }
-  });
-
-  it("ignores an unrecognized OTEL_INSTRUMENT_FETCH and honors the code option", async () => {
-    process.env.OTEL_INSTRUMENT_FETCH = "maybe";
-    const original = globalThis.fetch;
-    try {
-      const handle = setupOtel({
-        serviceName: "env-fetch-bogus",
-        endpoint: "https://otel.example.com",
-        instrumentFetch: false,
-      });
-      // Unrecognized value -> parseBooleanEnv returns undefined -> the code
-      // option (false) decides, so fetch stays disabled.
-      expect(fetchInstrumentationActive()).toBe(false);
-      expect(globalThis.fetch).toBe(original);
-      await handle.shutdown();
     } finally {
       globalThis.fetch = original;
     }

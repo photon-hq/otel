@@ -183,14 +183,6 @@ setupOtel({
 });
 ```
 
-Or disable it from the environment — no code change or redeploy of app logic required:
-
-```bash
-OTEL_INSTRUMENT_FETCH=false
-```
-
-`OTEL_INSTRUMENT_FETCH` accepts `true` / `1` (force on) and `false` / `0` (disable), and takes precedence over both the `instrumentFetch` option and the default. The object form (`mode`, `ignore`) still configures _how_ fetch is traced whenever instrumentation is on.
-
 You can force it on even without an exporter endpoint:
 
 ```ts
@@ -236,7 +228,6 @@ The package always excludes its own OTLP trace and log exporter endpoints from f
 | OTLP headers | `OTEL_EXPORTER_OTLP_HEADERS` | `setupOtel({ headers })` |
 | Log level | `LOG_LEVEL` | `setupOtel({ logLevel })` or `setLogLevel()` |
 | Deployment environment | `DEPLOYMENT_ENV` | `development` |
-| Fetch instrumentation | `OTEL_INSTRUMENT_FETCH` | `setupOtel({ instrumentFetch })` or default |
 
 ## Best practices
 
