@@ -81,11 +81,14 @@ export function instrumentFetchNative(
   options: InstrumentFetchOptions | undefined,
   requireFn: RequireFn
 ): FetchInstrumentation | undefined {
-  // The undici instrumentation has no hook to stamp caller-supplied static
-  // attributes onto every span, so when they're requested, decline the native
-  // path and let the caller fall back to the globalThis.fetch wrap (which does
-  // apply them).
-  if (options?.attributes && Object.keys(options.attributes).length > 0) {
+  // The undici instrumentation exposes no hook to stamp caller-supplied static
+  // attributes on every span, nor to rewrite `url.full` for redaction. When
+  // either is requested, decline the native path and let the caller fall back
+  // to the globalThis.fetch wrap (which applies both).
+  const hasStaticAttributes =
+    options?.attributes !== undefined &&
+    Object.keys(options.attributes).length > 0;
+  if (hasStaticAttributes || options?.redactUrl !== undefined) {
     return;
   }
 

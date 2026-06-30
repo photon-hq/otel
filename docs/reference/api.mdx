@@ -15,6 +15,7 @@ import {
   sanitizeEmail,
   sanitizeErrorMessage,
   sanitizePhone,
+  sanitizeUrl,
   setLogLevel,
   setupOtel,
   withSpan,
@@ -185,10 +186,13 @@ function instrumentFetch(options?: InstrumentFetchOptions): FetchInstrumentation
 interface FetchSpanOptions {
   ignore?: (url: string) => boolean;
   attributes?: Attributes;
+  redactUrl?: (url: string) => string;
 }
 ```
 
 `ignore` skips spans for matching URLs. `attributes` (the OpenTelemetry `Attributes` type) merges static attributes into every span this instrumentation produces — useful for tagging an SDK's traffic, such as `{ "peer.service": "openai" }`.
+
+`redactUrl` rewrites the URL before it is stored as `url.full`, so you can strip secrets from the query string or path while keeping the span (unlike `ignore`, which drops the span entirely). `server.address` / `server.port` are still derived from the original URL. Pair it with [`sanitizeUrl`](#sanitizeurl-url-options). On Node, setting `redactUrl` forces the `globalThis.fetch` wrap, because the native undici instrumentation has no hook to rewrite `url.full`.
 
 ### `InstrumentFetchOptions`
 
@@ -237,6 +241,7 @@ function createInstrumentedFetch(
 
 - Wraps the given fetch so each non-ignored request creates a client span with HTTP attributes and W3C trace-context injection.
 - Merges `options.attributes` into every span.
+- Applies `options.redactUrl` to the stored `url.full`, if provided.
 - Returns the fetch function directly — there is no global lifecycle and no `unpatch()`.
 - Is idempotent: passing an already-instrumented fetch returns it unchanged.
 - Always uses the wrapper technique, so it works identically on Bun and Node.
@@ -286,6 +291,43 @@ Example:
 ```ts
 sanitizeErrorMessage("contact foo.bar@example.com or +13315553374");
 // "contact fo***@e***.com or +133xxxx3374"
+```
+
+## `sanitizeUrl(url, options)`
+
+Redacts secrets from a URL before it is recorded as a span attribute, following the OpenTelemetry URL semantic conventions: sensitive query-parameter values and `user:pass@` credentials are replaced with the literal `REDACTED`, with the key preserved (`sig=REDACTED`). Non-sensitive parameters and the path are left intact.
+
+```ts
+function sanitizeUrl(url: string, options?: SanitizeUrlOptions): string;
+
+interface SanitizeUrlOptions {
+  params?: string[];
+  redactDefaults?: boolean;
+}
+```
+
+- `params` — additional query-parameter names to redact, on top of the built-in list. Case-sensitive, matching the semantic conventions.
+- `redactDefaults` — redact the built-in semconv list (`X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `sig`, `X-Goog-Signature`) and `user:pass@` credentials. Defaults to `true`.
+
+Unparseable input — and input with nothing to redact — is returned unchanged.
+
+It is designed to pair with the `redactUrl` fetch option:
+
+```ts
+import { createInstrumentedFetch, sanitizeUrl } from "@photon-ai/otel";
+
+const fetch = createInstrumentedFetch(undefined, {
+  redactUrl: (url) => sanitizeUrl(url, { params: ["token", "api_key"] }),
+});
+```
+
+Example:
+
+```ts
+sanitizeUrl("https://api.example.com/v1?token=secret&page=2", {
+  params: ["token"],
+});
+// "https://api.example.com/v1?token=REDACTED&page=2"
 ```
 
 ## `PHOTON_OTEL_VERSION`
