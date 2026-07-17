@@ -204,6 +204,20 @@ setupOtel({
 });
 ```
 
+To keep the span but strip secrets from the URL, use `redactUrl` with the `sanitizeUrl()` helper:
+
+```ts
+import { sanitizeUrl, setupOtel } from "@photon-ai/otel";
+
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: {
+    redactUrl: (url) => sanitizeUrl(url, { params: ["token", "api_key"] }),
+  },
+});
+```
+
 On Node, `setupOtel()` uses the native `@opentelemetry/instrumentation-undici` by default; on Bun it wraps `globalThis.fetch`. Force the wrap on both runtimes with `mode: "global"`:
 
 ```ts
@@ -236,4 +250,4 @@ The package always excludes its own OTLP trace and log exporter endpoints from f
 - Set `serviceVersion` from your release artifact when possible.
 - Prefer stable resource attributes over high-cardinality request values.
 - Use `LOG_LEVEL=debug` temporarily when debugging production incidents, then return to `info` or higher.
-- Avoid putting secrets in URL query strings because fetch spans include `url.full`.
+- Avoid putting secrets in URL query strings (fetch spans include `url.full`); when unavoidable, strip them with the `redactUrl` option and the `sanitizeUrl()` helper.

@@ -3,11 +3,12 @@ title: "PII scrubbing"
 description: "Use the sanitize helpers and understand where automatic scrubbing does and does not happen."
 ---
 
-The package exports three helpers for masking common personally identifiable information:
+The package exports helpers for masking common personally identifiable information and URL secrets:
 
 - `sanitizeEmail(input)`
 - `sanitizePhone(input)`
 - `sanitizeErrorMessage(input)`
+- `sanitizeUrl(input, options?)`
 
 They are intentionally small and predictable. They are not a full data-loss-prevention system.
 
@@ -79,7 +80,7 @@ The package does not sanitize:
 - log attributes
 - logger exception attributes
 - span attributes
-- fetch `url.full`
+- fetch `url.full` (opt in with the `redactUrl` option — see [URL safety](#url-safety))
 - response bodies
 - request bodies
 - headers
@@ -123,21 +124,33 @@ Prefer stable internal identifiers over emails or phone numbers.
 
 ## URL safety
 
-Fetch spans include `url.full`, including query parameters.
+Fetch spans include `url.full`, including query parameters. When a URL carries a token, API key, or other secret, redact it with the `redactUrl` fetch option so the span keeps everything except the secret. The `sanitizeUrl()` helper implements semantic-convention redaction — sensitive query-parameter values and `user:pass@` credentials are replaced with the literal `REDACTED`, with the key preserved:
 
-Avoid URLs like:
+```ts
+import { sanitizeUrl, setupOtel } from "@photon-ai/otel";
 
-```txt
-https://api.example.com/search?email=foo.bar@example.com
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: {
+    redactUrl: (url) => sanitizeUrl(url, { params: ["token", "api_key"] }),
+  },
+});
 ```
 
-Prefer:
+Or per SDK, without touching the global fetch:
 
-```txt
-https://api.example.com/search
+```ts
+import { createInstrumentedFetch, sanitizeUrl } from "@photon-ai/otel";
+
+const fetch = createInstrumentedFetch(undefined, {
+  redactUrl: (url) => sanitizeUrl(url),
+});
 ```
 
-with the sensitive value in a request body or header that your telemetry pipeline does not record. If you cannot avoid sensitive query strings, configure fetch instrumentation to ignore those URLs.
+`redactUrl` keeps the span — unlike `ignore`, which drops it entirely. On Node it forces the `globalThis.fetch` wrap, because the native undici instrumentation has no hook to rewrite `url.full`.
+
+Even with redaction available, prefer keeping secrets out of URLs in the first place — put the sensitive value in a request body or header your telemetry pipeline does not record. Reserve `ignore` for URLs you do not want traced at all.
 
 ## Best practices
 

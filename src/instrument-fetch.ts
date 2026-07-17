@@ -31,6 +31,20 @@ export interface FetchSpanOptions {
    * query string. The request is still performed — only the span is skipped.
    */
   ignore?: (url: string) => boolean;
+  /**
+   * Rewrite the request URL before it is stored as `url.full`. Use this to
+   * strip tokens/secrets from the query string or path while still keeping the
+   * span (unlike `ignore`, which drops the span entirely). Receives the
+   * absolute URL and returns the value to record; `server.address` /
+   * `server.port` are still derived from the ORIGINAL URL, so an aggressive
+   * redactor can't break host resolution. Pair with the `sanitizeUrl()` helper
+   * for semconv-style query-parameter redaction.
+   *
+   * On Node, requesting `redactUrl` forces the `globalThis.fetch` wrap instead
+   * of the native undici instrumentation (which has no hook to rewrite
+   * `url.full`), trading undici's richer attributes for the redaction.
+   */
+  redactUrl?: (url: string) => string;
 }
 
 export interface InstrumentFetchOptions extends FetchSpanOptions {
@@ -126,10 +140,16 @@ function toAttributes(attrs: Attributes): Attributes {
   return out;
 }
 
-function fetchAttributes(method: string, url: string): Attributes {
+function fetchAttributes(
+  method: string,
+  url: string,
+  redactUrl?: (url: string) => string
+): Attributes {
   const attrs: Attributes = {
     [ATTR_HTTP_REQUEST_METHOD]: method,
-    [ATTR_URL_FULL]: url,
+    // server.* below come from the original URL; only the stored full URL is
+    // redacted, so host/port resolution is unaffected by the redactor.
+    [ATTR_URL_FULL]: redactUrl ? redactUrl(url) : url,
   };
   try {
     const parsed = new URL(url);
@@ -198,7 +218,7 @@ function buildWrappedFetch(
       if (staticAttributes) {
         span.setAttributes(staticAttributes);
       }
-      span.setAttributes(fetchAttributes(name, url));
+      span.setAttributes(fetchAttributes(name, url, options?.redactUrl));
       try {
         const headers = buildPropagatedHeaders(input, init);
         const response = await callOriginal(original, input, init, headers);

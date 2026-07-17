@@ -107,7 +107,25 @@ When a URL is ignored:
 - no span is emitted
 - trace headers are not injected by this wrapper
 
-Use this for health checks, high-volume polling, or URLs with secrets in the query string.
+Use this for health checks or high-volume polling. To keep the span but hide a secret in the URL, reach for `redactUrl` instead (below).
+
+## Redacting URLs
+
+`ignore` drops the whole span. When you want to keep the span but strip a secret from the URL, use `redactUrl` — it rewrites the value stored as `url.full` while leaving `server.address` / `server.port` (derived from the original URL) and the rest of the span intact.
+
+```ts
+import { instrumentFetch, sanitizeUrl } from "@photon-ai/otel";
+
+instrumentFetch({
+  redactUrl: (url) => sanitizeUrl(url, { params: ["token", "api_key"] }),
+});
+```
+
+`sanitizeUrl()` follows the OpenTelemetry URL semantic conventions: it replaces sensitive query-parameter values and `user:pass@` credentials with the literal `REDACTED`, keeping the parameter key (`token=REDACTED`). It also redacts a built-in default list (`X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `sig`, `X-Goog-Signature`). Pass your own names in `params`, or write any `(url) => string` function for full control — including stripping tokens from path segments.
+
+The redactor only changes what telemetry records; the real request still uses the original URL.
+
+On Node, setting `redactUrl` forces the `globalThis.fetch` wrap instead of the native undici instrumentation (which has no hook to rewrite `url.full`), trading undici's richer attributes for the redaction — the same tradeoff as static `attributes`.
 
 ## Automatic OTLP endpoint exclusion
 
@@ -172,14 +190,14 @@ Native fetch tracing requires Node 20.6 or newer (the undici instrumentation's f
 
 Fetch spans include `url.full`, which includes the query string.
 
-Do not put secrets, tokens, emails, or phone numbers in query strings. If you must call an endpoint with sensitive query parameters, use `ignore` to skip that URL or sanitize upstream.
+Prefer keeping secrets, tokens, emails, and phone numbers out of query strings. When you can't, use [`redactUrl`](#redacting-urls) to strip them while keeping the span, or `ignore` to skip the URL entirely.
 
-Thrown fetch error messages are sanitized before being used as span status messages by the `globalThis.fetch` wrap (Bun, or `mode: "global"`). The native undici instrumentation on Node does not scrub status messages — use `mode: "global"` if you need that scrubbing on Node. URL attributes are not sanitized on either path.
+Thrown fetch error messages are sanitized before being used as span status messages by the `globalThis.fetch` wrap (Bun, or `mode: "global"`). The native undici instrumentation on Node does not scrub status messages — use `mode: "global"` if you need that scrubbing on Node. Unless you set `redactUrl`, URL attributes are recorded as-is on both paths.
 
 ## Best practices
 
 - Prefer automatic setup-managed instrumentation for services.
-- Use `ignore` for health checks and sensitive URLs.
-- Keep secrets out of query strings.
+- Use `ignore` for health checks; use `redactUrl` to strip secrets from traced URLs.
+- Keep secrets out of query strings where you can.
 - Call `shutdown()` or `unpatch()` in tests to restore global fetch.
 - Install setup before code starts making outbound requests.

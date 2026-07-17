@@ -138,6 +138,17 @@ describe("instrumentFetchNative", () => {
     expect(state.registered).toBe(0);
   });
 
+  it("declines the native path when redactUrl is requested", () => {
+    const { requireFn, state } = makeFakeRequire();
+
+    // Undici has no hook to rewrite url.full, so redaction forces the wrap —
+    // signalled by returning undefined without registering.
+    expect(
+      instrumentFetchNative({ redactUrl: (url) => url }, requireFn)
+    ).toBeUndefined();
+    expect(state.registered).toBe(0);
+  });
+
   it("rethrows failures that are not a missing optional package", () => {
     const requireFn: RequireFn = () => {
       throw new Error("incompatible @opentelemetry/instrumentation-undici");

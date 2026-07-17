@@ -142,6 +142,9 @@ Options (`instrumentFetch`):
   messages kept on Node (see caveats).
 - **`ignore`:** `instrumentFetch: { ignore: (url) => url.includes("/healthz") }`. Your own OTLP
   endpoint is always excluded automatically, so the exporter never traces itself.
+- **`redactUrl`:** `instrumentFetch: { redactUrl: (url) => sanitizeUrl(url, { params: ["token"] }) }`
+  rewrites the URL stored as `url.full`, so you keep the span but drop secrets from the query string or
+  path. On Node it forces the `globalThis.fetch` wrap (undici can't rewrite `url.full`).
 
 Caveats:
 
@@ -149,8 +152,8 @@ Caveats:
   HTTP semconv for span status — a 2xx client span is left `UNSET`, and only `5xx`/network failures are
   marked `ERROR`; the Bun wrap marks all `4xx`/`5xx` as `ERROR`. The Bun wrap also scrubs PII from the
   error message attached to span status — **undici does not**. Use `mode: "global"` for parity.
-- **`url.full` includes the query string** on both. If your URLs carry secrets there, use `ignore` or
-  redact upstream.
+- **`url.full` includes the query string** on both. If your URLs carry secrets there, strip them with
+  `redactUrl` (keeps the span) or drop the request with `ignore`.
 - **Native fetch tracing needs Node ≥ 20.6** (the undici instrumentation's floor); older 20.x falls
   back to the global wrap.
 
@@ -180,7 +183,8 @@ const client = new OpenAI({
 - Returns a fetch function directly — there's no global lifecycle, so no `unpatch()` handle.
 - Idempotent: passing an already-instrumented fetch returns it unchanged.
 - `options`: `ignore: (url) => boolean` skips spans for some URLs; `attributes` merges static attributes
-  into every span (the practical way to tell different SDKs' spans apart).
+  into every span (the practical way to tell different SDKs' spans apart); `redactUrl: (url) => string`
+  rewrites `url.full` to strip secrets (pair with `sanitizeUrl`).
 - Always uses the wrapper technique, so it behaves identically on Bun and Node (the native undici
   instrumentation can't target a single instance).
 

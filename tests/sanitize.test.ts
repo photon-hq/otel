@@ -3,6 +3,7 @@ import {
   sanitizeEmail,
   sanitizeErrorMessage,
   sanitizePhone,
+  sanitizeUrl,
 } from "../src/sanitize";
 
 describe("sanitizeEmail", () => {
@@ -67,5 +68,47 @@ describe("sanitizeErrorMessage", () => {
 
   it("leaves messages without PII untouched", () => {
     expect(sanitizeErrorMessage("simple failure")).toBe("simple failure");
+  });
+});
+
+describe("sanitizeUrl", () => {
+  it("redacts a listed query param, keeping others and the path", () => {
+    expect(
+      sanitizeUrl("https://h.example.com/p?token=abc&keep=1", {
+        params: ["token"],
+      })
+    ).toBe("https://h.example.com/p?token=REDACTED&keep=1");
+  });
+
+  it("redacts the semconv default params with no options", () => {
+    expect(
+      sanitizeUrl("https://h.example.com/p?sig=abc&X-Amz-Signature=def&keep=1")
+    ).toBe(
+      "https://h.example.com/p?sig=REDACTED&X-Amz-Signature=REDACTED&keep=1"
+    );
+  });
+
+  it("redacts user:pass credentials", () => {
+    expect(sanitizeUrl("https://user:pass@h.example.com/p")).toBe(
+      "https://REDACTED:REDACTED@h.example.com/p"
+    );
+  });
+
+  it("returns the input unchanged when nothing matches", () => {
+    const url = "https://h.example.com/p?keep=1";
+    expect(sanitizeUrl(url)).toBe(url);
+  });
+
+  it("returns unparseable input unchanged", () => {
+    expect(sanitizeUrl("not a url")).toBe("not a url");
+  });
+
+  it("redacts only the listed params when redactDefaults is false", () => {
+    expect(
+      sanitizeUrl("https://user:pass@h.example.com/p?token=abc&sig=def", {
+        params: ["token"],
+        redactDefaults: false,
+      })
+    ).toBe("https://user:pass@h.example.com/p?token=REDACTED&sig=def");
   });
 });
