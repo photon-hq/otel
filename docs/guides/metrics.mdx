@@ -1,0 +1,203 @@
+---
+title: "Metrics"
+description: "Create and inject OpenTelemetry metrics without depending on global provider state."
+---
+
+The normal consumer path is:
+
+1. Call `setupOtel()` during application startup.
+2. Call `otel.getMeter(name)` on the returned handle.
+3. Create instruments from that meter.
+4. Await `otel.shutdown()` after application work has drained.
+
+```ts
+import { setupOtel } from "@photon-ai/otel";
+
+const otel = setupOtel({
+  serviceName: "orders-service",
+  serviceVersion: "1.2.0",
+});
+
+const ordersProcessed = otel
+  .getMeter("orders")
+  .createCounter("orders.processed", {
+    description: "Orders processed by the service",
+  });
+
+ordersProcessed.add(1, { result: "success" });
+
+await otel.shutdown();
+```
+
+`getMeter()` always uses the provider created by that `setupOtel()` call. The
+same code therefore works in the default global mode and with
+`register: false`.
+
+## Create instruments after setup
+
+Create meters and instruments after `setupOtel()` has run. Avoid module-level
+instrument creation through OpenTelemetry's global API:
+
+```ts
+// Avoid this in reusable modules.
+import { metrics } from "@opentelemetry/api";
+
+const meter = metrics.getMeter("orders");
+export const ordersProcessed = meter.createCounter("orders.processed");
+```
+
+If that module loads before setup, OpenTelemetry can create the instrument
+against its no-op provider. The existing instrument will not automatically
+move to the provider configured later.
+
+There is intentionally no top-level `getMeter()` or `createMeter()` export from
+`@photon-ai/otel`. Requiring the setup handle makes the initialization order
+explicit.
+
+## Reusable modules should accept a `Meter`
+
+Keep OpenTelemetry setup in the application entry point. A reusable module
+should accept the standard `Meter` interface and construct its instruments in
+a factory:
+
+```ts
+// order-metrics.ts
+import type { Counter, Meter } from "@opentelemetry/api";
+
+export interface OrderMetrics {
+  processed: Counter;
+  processingFailures: Counter;
+}
+
+export const createOrderMetrics = (meter: Meter): OrderMetrics => ({
+  processed: meter.createCounter("orders.processed", {
+    description: "Orders processed by the service",
+  }),
+  processingFailures: meter.createCounter("orders.processing_failures", {
+    description: "Orders that failed during processing",
+  }),
+});
+```
+
+Create the metrics after setup and inject the resulting object into the code
+that records measurements:
+
+```ts
+// service.ts
+import { setupOtel } from "@photon-ai/otel";
+import { createOrderMetrics } from "./order-metrics";
+
+const otel = setupOtel({ serviceName: "orders-service" });
+const orderMetrics = createOrderMetrics(otel.getMeter("orders"));
+
+export const processOrder = async (): Promise<void> => {
+  try {
+    await persistOrder();
+    orderMetrics.processed.add(1, { result: "success" });
+  } catch (error) {
+    orderMetrics.processingFailures.add(1, {
+      "error.type": error instanceof Error ? error.name : "_OTHER",
+    });
+    throw error;
+  }
+};
+```
+
+This boundary has three useful properties:
+
+- The reusable module cannot accidentally read the global provider too early.
+- The application decides which setup and instrumentation scope to use.
+- Tests can inject a fake `Meter` without constructing a `MeterProvider`.
+
+If a reusable package imports the `Meter` type, declare
+`@opentelemetry/api` as a direct dependency of that package.
+
+## Using a shared publisher
+
+When an integration already accepts a `Meter`, pass the setup-bound meter
+directly. For the shared NATS JetStream publisher used by Projects:
+
+```ts
+import { setupOtel } from "@photon-ai/otel";
+import { createJetStreamPublisher } from "@photon-hq/connect-basic/nats";
+
+const otel = setupOtel({
+  serviceName: "projects-service",
+  serviceVersion: "1.2.0",
+});
+
+const publisher = createJetStreamPublisher({
+  meter: otel.getMeter("@photon-hq/connect-basic"),
+  name: "projects-service",
+  seed: env.NATS_NKEY_SEED,
+  url: env.NATS_URL,
+});
+```
+
+The publisher creates its instruments when the factory runs, after setup, and
+records publish and reconnect outcomes through the injected meter. The
+application does not need to understand global meter-provider registration.
+
+## Choose stable names and attributes
+
+The string passed to `getMeter()` identifies the instrumentation scope. Use a
+stable module or package name, such as `orders` or
+`@photon-hq/connect-basic`. You may also pass a version when instrumenting a
+versioned package:
+
+```ts
+const meter = otel.getMeter("@acme/order-client", "2.4.0");
+```
+
+Metric names and attributes become part of dashboards and alerts, so treat
+them as a long-lived interface:
+
+- Use stable metric names that describe what is measured.
+- Add a description and unit where they make the measurement clearer.
+- Keep attribute values bounded, such as `result: "success" | "failure"`.
+- Do not attach request IDs, user IDs, email addresses, raw URLs, or other
+  high-cardinality values to metrics.
+
+## Export configuration
+
+Set one base OTLP/HTTP endpoint for all three signals:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Metrics are sent to `/v1/metrics`. Use
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` when metrics require a different full
+URL, and `OTEL_EXPORTER_OTLP_METRICS_HEADERS` for metric-specific headers.
+
+The periodic reader exports every 60 seconds with a 30-second timeout by
+default. Configure these values in milliseconds with
+`OTEL_METRIC_EXPORT_INTERVAL` and `OTEL_METRIC_EXPORT_TIMEOUT`. Invalid values
+fall back to the defaults, and timeout is capped at the interval.
+
+With no endpoint, `getMeter()` still returns SDK-backed instruments. They can
+be used normally, but measurements are not exported.
+
+## Shutdown and final export
+
+Drain request handlers, consumers, and publishers before shutting down
+telemetry. Then await `otel.shutdown()` so the meter provider performs a final
+collection and export:
+
+```ts
+process.on("SIGTERM", async () => {
+  await publisher.drain();
+  await otel.shutdown();
+  process.exit(0);
+});
+```
+
+In short-lived scripts and tests, call `shutdown()` before the process exits;
+otherwise the periodic export interval may not have elapsed yet.
+
+## Advanced provider access
+
+`otel.meterProvider` remains available for integrations that explicitly need a
+provider. Prefer `otel.getMeter()` for application instrumentation and pass a
+`Meter` to reusable modules. This keeps consumer code independent of global
+registration and easier to test.

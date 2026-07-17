@@ -1,7 +1,7 @@
 {
   "name": "@photon-ai/otel",
   "version": "3.1.0",
-  "description": "DX-focused OpenTelemetry wrapper for Bun and Node.js: one-call setup, structured logging, span helper, and built-in PII scrubbing.",
+  "description": "DX-focused OpenTelemetry wrapper for Bun and Node.js: one-call traces, logs, metrics, fetch instrumentation, and PII scrubbing.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -40,9 +40,11 @@
     "@opentelemetry/context-async-hooks": "^2.7.1",
     "@opentelemetry/core": "^2.7.1",
     "@opentelemetry/exporter-logs-otlp-http": "^0.218.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.218.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
     "@opentelemetry/resources": "^2.7.1",
     "@opentelemetry/sdk-logs": "^0.218.0",
+    "@opentelemetry/sdk-metrics": "^2.7.1",
     "@opentelemetry/sdk-trace-base": "^2.7.1",
     "@opentelemetry/semantic-conventions": "^1.41.1"
   },
@@ -72,6 +74,7 @@
     "otel",
     "tracing",
     "logging",
+    "metrics",
     "observability",
     "bun",
     "nodejs",

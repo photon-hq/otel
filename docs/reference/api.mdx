@@ -24,7 +24,7 @@ import {
 
 ## `setupOtel(options)`
 
-Boots OpenTelemetry traces and logs.
+Boots OpenTelemetry traces, logs, and metrics.
 
 ```ts
 function setupOtel(options: SetupOtelOptions): OtelHandle;
@@ -41,6 +41,7 @@ interface SetupOtelOptions {
   resourceAttributes?: Record<string, string | number | boolean>;
   logLevel?: LogLevel;
   instrumentFetch?: boolean | InstrumentFetchOptions;
+  register?: boolean;
 }
 ```
 
@@ -49,7 +50,7 @@ interface SetupOtelOptions {
 - Idempotent within a process.
 - Installs async context management.
 - Installs W3C trace-context and baggage propagation.
-- Configures OTLP/HTTP trace and log exporters when endpoints are available.
+- Configures OTLP/HTTP trace, log, and metric exporters when endpoints are available.
 - Supports no-endpoint local development.
 - Optionally instruments fetch.
 - Returns an `OtelHandle`.
@@ -58,11 +59,32 @@ interface SetupOtelOptions {
 
 ```ts
 interface OtelHandle {
+  getMeter(name: string, version?: string, options?: MeterOptions): Meter;
+  tracerProvider: TracerProvider;
+  loggerProvider: LoggerProvider;
+  meterProvider: MeterProvider;
   shutdown(): Promise<void>;
 }
 ```
 
-`shutdown()` unpatches fetch instrumentation if setup installed it, shuts down the tracer provider, shuts down the logger provider, and clears the active setup handle.
+`getMeter()` is the recommended metric entry point. It returns a meter from
+this setup's provider, so it works identically in global and scoped modes:
+
+```ts
+const jobsCompleted = otel
+  .getMeter("worker")
+  .createCounter("worker.jobs.completed");
+
+jobsCompleted.add(1, { result: "success" });
+```
+
+`meterProvider` is an advanced escape hatch for integrations that explicitly
+require a provider. Reusable instrumentation should normally accept a `Meter`,
+not a `MeterProvider`.
+
+Create meters and instruments after setup. There is intentionally no top-level meter helper because calling one during module initialization could permanently create no-op instruments.
+
+`shutdown()` unpatches fetch instrumentation if setup installed it, shuts down all three providers, and clears the active setup handle.
 
 ## `isOtelActive()`
 

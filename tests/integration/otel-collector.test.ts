@@ -32,14 +32,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const outputDir = process.env.COLLECTOR_OUTPUT_DIR ?? join(here, "output");
 const tracesFile = join(outputDir, "traces.json");
 const logsFile = join(outputDir, "logs.json");
+const metricsFile = join(outputDir, "metrics.json");
 
 // Tag this run's telemetry so assertions match exactly our data even if the
-// collector's output files contain spans/logs from a previous run.
+// collector's output files contain spans, logs, or metrics from a previous run.
 const nonce = `${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
 const happySpanName = `integration-happy-${nonce}`;
 const errorSpanName = `integration-error-${nonce}`;
 const fetchParentSpanName = `integration-fetch-parent-${nonce}`;
 const fetchMarker = `integration-fetch-${nonce}`;
+const metricName = "photon.otel.integration.counter";
 const rawEmail = "user@example.com";
 
 // --- OTLP/JSON shapes emitted by the collector's file exporter ---------------
@@ -90,6 +92,25 @@ interface OtlpResourceLogs {
 interface OtlpLogsData {
   resourceLogs?: OtlpResourceLogs[];
 }
+interface OtlpNumberDataPoint {
+  asDouble?: number;
+  asInt?: string | number;
+  attributes?: OtlpAttr[];
+}
+interface OtlpMetric {
+  name?: string;
+  sum?: {
+    dataPoints?: OtlpNumberDataPoint[];
+    isMonotonic?: boolean;
+  };
+}
+interface OtlpResourceMetrics {
+  resource?: OtlpResource;
+  scopeMetrics?: { metrics?: OtlpMetric[] }[];
+}
+interface OtlpMetricsData {
+  resourceMetrics?: OtlpResourceMetrics[];
+}
 
 type AttrMap = Record<string, string | number | boolean>;
 
@@ -108,6 +129,13 @@ interface CollectedLog {
   resource: AttrMap;
   severityText?: string;
   traceId?: string;
+}
+interface CollectedMetric {
+  attributes: AttrMap;
+  isMonotonic: boolean;
+  name: string;
+  resource: AttrMap;
+  value: number;
 }
 
 // --- Parsing helpers ---------------------------------------------------------
@@ -212,6 +240,37 @@ function readLogs(): CollectedLog[] {
   return records.filter((r) => r.resource["test.nonce"] === nonce);
 }
 
+function readMetrics(): CollectedMetric[] {
+  const metricRecords: CollectedMetric[] = [];
+  for (const line of readLines(metricsFile)) {
+    let parsed: OtlpMetricsData;
+    try {
+      parsed = JSON.parse(line) as OtlpMetricsData;
+    } catch {
+      continue;
+    }
+    for (const resourceMetrics of parsed.resourceMetrics ?? []) {
+      const resource = attrsToMap(resourceMetrics.resource?.attributes);
+      for (const scope of resourceMetrics.scopeMetrics ?? []) {
+        for (const metric of scope.metrics ?? []) {
+          for (const point of metric.sum?.dataPoints ?? []) {
+            metricRecords.push({
+              attributes: attrsToMap(point.attributes),
+              isMonotonic: metric.sum?.isMonotonic ?? false,
+              name: metric.name ?? "",
+              resource,
+              value: Number(point.asInt ?? point.asDouble ?? 0),
+            });
+          }
+        }
+      }
+    }
+  }
+  return metricRecords.filter(
+    (metric) => metric.resource["test.nonce"] === nonce
+  );
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -242,6 +301,7 @@ function isErrorStatus(status: OtlpStatus | undefined): boolean {
 
 let spans: CollectedSpan[] = [];
 let logRecords: CollectedLog[] = [];
+let metricRecords: CollectedMetric[] = [];
 let errorSpanRejected = false;
 
 beforeAll(async () => {
@@ -257,6 +317,12 @@ beforeAll(async () => {
     logLevel: "debug",
   });
   const log = createLogger("integration");
+  const counter = handle
+    .getMeter("photon-otel-integration")
+    .createCounter(metricName, {
+      description: "Integration-test counter",
+    });
+  counter.add(3, { "test.case": "metrics" });
 
   // Happy path: span with attributes wrapping a log (for trace correlation).
   await withSpan(happySpanName, { "test.case": "happy" }, async () => {
@@ -314,6 +380,9 @@ beforeAll(async () => {
       items.some((r) => r.body === "hello from integration") &&
       items.some((r) => r.body === "integration error log")
   );
+  metricRecords = await pollUntil(readMetrics, (items) =>
+    items.some((metric) => metric.name === metricName)
+  );
 }, HOOK_TIMEOUT_MS);
 
 describe("real OTLP/HTTP round-trip to an OpenTelemetry Collector", () => {
@@ -366,6 +435,17 @@ describe("real OTLP/HTTP round-trip to an OpenTelemetry Collector", () => {
     const record = logRecords.find((r) => r.body === "hello from integration");
     expect(span?.traceId).toBeTruthy();
     expect(record?.traceId).toBe(span?.traceId);
+  });
+
+  it("delivers a counter with attributes and the shared service resource", () => {
+    const metric = metricRecords.find((item) => item.name === metricName);
+    expect(metric).toBeDefined();
+    expect(metric?.value).toBe(3);
+    expect(metric?.isMonotonic).toBe(true);
+    expect(metric?.attributes["test.case"]).toBe("metrics");
+    expect(metric?.resource["service.name"]).toBe(SERVICE_NAME);
+    expect(metric?.resource["service.version"]).toBe(PHOTON_OTEL_VERSION);
+    expect(metric?.resource["test.nonce"]).toBe(nonce);
   });
 
   it("delivers an auto-instrumented fetch CLIENT span with HTTP attributes", () => {
