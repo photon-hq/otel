@@ -4,7 +4,8 @@ A DX-focused OpenTelemetry wrapper for **Bun** and **Node.js**.
 
 Vanilla OTel works, but the setup is verbose, the logger plumbing is awkward, and PII scrubbing is on you. `@photon-ai/otel` wraps the OTLP/HTTP stack into a few well-named functions:
 
-- **`setupOtel()`** — idempotent one-call bootstrap for traces + logs. Honors all standard `OTEL_EXPORTER_OTLP_*` env vars.
+- **`setupOtel()`** — idempotent one-call bootstrap for traces + logs + metrics. Honors standard `OTEL_EXPORTER_OTLP_*` env vars.
+- **`otel.getMeter(name)`** — creates standard OpenTelemetry instruments from this setup's meter provider, with identical behavior in global and scoped mode.
 - **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and is gated by a configurable `LOG_LEVEL`.
 - **`withSpan(name, attrs?, fn)`** — wrap any sync or async function in a span; errors are recorded and PII in the error message is scrubbed before being attached to span status.
 - **Automatic `fetch` tracing** — `setupOtel()` instruments outbound `fetch` so every request gets a CLIENT span and W3C trace-context headers. On **Node** it uses the official `@opentelemetry/instrumentation-undici`; on **Bun** — whose native fetch emits nothing for the standard `diagnostics_channel`-based instrumentations — it wraps `globalThis.fetch`. Pass `instrumentFetch: { mode: "global" }` to force the wrap on both for identical spans.
@@ -25,29 +26,74 @@ npm install @photon-ai/otel
 ```ts
 import { createLogger, setupOtel, withSpan } from "@photon-ai/otel";
 
-setupOtel({
+const otel = setupOtel({
   serviceName: "my-service",
   serviceVersion: "1.0.0",
   endpoint: "https://otel.example.com", // optional; env var wins
 });
 
 const log = createLogger("server");
+const requests = otel.getMeter("server").createCounter("server.requests");
 
 await withSpan("handle-request", { route: "/users" }, async () => {
   log.info("processing request", { userId: 42 });
+  requests.add(1, { route: "/users" });
   // Outbound fetch is traced automatically: a CLIENT span, parented to this
   // one, with a `traceparent` header injected for the downstream service.
   await fetch("https://api.example.com/users");
 });
+
+await otel.shutdown();
 ```
 
-If `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `endpoint` option) is unset, `setupOtel()` still runs but exporters are no-ops — perfect for local development with zero config.
+If `OTEL_EXPORTER_OTLP_ENDPOINT` (or the `endpoint` option) is unset,
+`setupOtel()` still returns real providers and instruments; measurements simply
+are not exported. This keeps local development zero-config.
+
+## Creating metrics
+
+For application code, create instruments from the handle returned by
+`setupOtel()`:
+
+```ts
+const ordersProcessed = otel
+  .getMeter("orders")
+  .createCounter("orders.processed", {
+    description: "Orders processed by the service",
+  });
+
+ordersProcessed.add(1, { result: "success" });
+```
+
+Create meters and instruments after `setupOtel()` runs. Do not use
+`metrics.getMeter()` in a module-level initializer: if it runs before setup, it
+can bind instruments to OpenTelemetry's no-op provider.
+
+For a reusable module, accept an OpenTelemetry `Meter` and build instruments in
+a factory:
+
+```ts
+import type { Meter } from "@opentelemetry/api";
+
+export const createOrderMetrics = (meter: Meter) => ({
+  processed: meter.createCounter("orders.processed", {
+    description: "Orders processed by the service",
+  }),
+});
+
+const orderMetrics = createOrderMetrics(otel.getMeter("orders"));
+```
+
+This is the recommended integration boundary: application startup owns OTel
+setup, while reusable code only knows about the standard `Meter` interface.
+See the [metrics guide](./docs/guides/metrics.mdx) for shared-publisher usage,
+attribute guidance, and scoped mode.
 
 ## API
 
 | Function                                      | Description                                                                                                |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `setupOtel(options): OtelHandle`              | Boots OTLP/HTTP traces + logs. Idempotent. Returns `{ shutdown(), tracerProvider, loggerProvider }`. Pass `register: false` for scoped mode (no global takeover). |
+| `setupOtel(options): OtelHandle`              | Boots OTLP/HTTP traces + logs + metrics. The handle exposes `getMeter()`, providers, and `shutdown()`. Pass `register: false` for scoped mode. |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
 | `instrumentFetch(options?): FetchInstrumentation` | Low-level wrap of `globalThis.fetch` for CLIENT spans + W3C propagation. Returns `{ unpatch() }`. `setupOtel` calls this on Bun; on Node it prefers native undici. |
 | `createInstrumentedFetch(baseFetch?, options?): typeof fetch` | Returns a NEW instrumented fetch (CLIENT spans + W3C propagation) wrapping `baseFetch` (default `globalThis.fetch`) without touching the global. For SDKs that take a `fetch` option. |
@@ -107,10 +153,14 @@ Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
 
 | Variable                                  | Effect                                                  |
 | ----------------------------------------- | ------------------------------------------------------- |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`             | Base endpoint; `/v1/traces` and `/v1/logs` auto-appended. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`             | Base endpoint; `/v1/traces`, `/v1/logs`, and `/v1/metrics` auto-appended. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`      | Full traces URL (overrides the base for traces).        |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`        | Full logs URL (overrides the base for logs).            |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`     | Full metrics URL (overrides the base for metrics).      |
 | `OTEL_EXPORTER_OTLP_HEADERS`              | `key=value,key=value` headers; merged with `options.headers` (env wins). |
+| `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`     | Trace-, log-, or metric-specific headers; override generic and code headers. |
+| `OTEL_METRIC_EXPORT_INTERVAL`             | Metric export interval in milliseconds. Defaults to `60000`. |
+| `OTEL_METRIC_EXPORT_TIMEOUT`              | Metric export timeout in milliseconds. Defaults to `30000`. |
 | `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`. Also drives the default log level. |
 | `LOG_LEVEL`                               | Minimum log level: `debug` \| `info` \| `warn` \| `error` \| `silent`. Overrides `setLogLevel()` / `setupOtel({ logLevel })`. |
 
@@ -197,7 +247,7 @@ affects `globalThis.fetch`, so a separately-passed instrumented fetch is counted
 
 ## Scoped mode (embedding in a library)
 
-By default `setupOtel()` registers the process-global OpenTelemetry tracer/logger providers — the
+By default `setupOtel()` registers the process-global OpenTelemetry tracer/logger/meter providers — the
 convenient app-level setup. If you're building a **library** that ships its own telemetry, that would
 take over the host application's OpenTelemetry. Pass `register: false` to run **scoped**:
 
@@ -208,13 +258,13 @@ const otel = setupOtel({ serviceName: "my-lib", register: false });
 await withSpan("work", async () => {
   /* ... */
 });
-// ...and the host app's global tracer/logger providers are left untouched.
+// ...and the host app's global tracer/logger/meter providers are left untouched.
 ```
 
 In scoped mode:
 
-- **No global takeover.** `setupOtel()` does not call `setGlobalTracerProvider` / `setGlobalLoggerProvider`;
-  the library's spans and logs flow to its own providers while the host keeps its global OTel.
+- **No global takeover.** `setupOtel()` does not register its tracer, logger, or meter provider globally;
+  the library's spans, logs, and metrics flow to its own providers while the host keeps its global OTel.
 - **The top-level helpers still work** — `withSpan`, `createLogger`, and `createInstrumentedFetch` resolve
   through the library's providers automatically.
 - **Shared context is preserved.** A W3C propagator and an `AsyncLocalStorageContextManager` are installed
@@ -222,8 +272,10 @@ In scoped mode:
   library shares the host's (spans nest across the boundary).
 - **Auto fetch instrumentation defaults off** (wrapping `globalThis.fetch` is process-wide, and native undici
   can only read the global provider). Trace a specific client with `createInstrumentedFetch()` instead.
-- **The handle exposes the providers** — `otel.tracerProvider` / `otel.loggerProvider` — if you need to build
-  extra tracers or wire additional processors.
+- **The handle owns metric lookup.** Use `otel.getMeter(name)` for the common path; it always resolves through
+  this setup's provider, including in scoped mode.
+- **The handle exposes the providers** — `otel.tracerProvider`, `otel.loggerProvider`, and `otel.meterProvider`
+  — as advanced integration escape hatches.
 
 ## Running on Node vs Bun
 

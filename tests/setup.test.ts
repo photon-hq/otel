@@ -1,4 +1,6 @@
 import dc from "node:diagnostics_channel";
+import { metrics } from "@opentelemetry/api";
+import { MeterProvider as SdkMeterProvider } from "@opentelemetry/sdk-metrics";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isOtelActive, setupOtel } from "../src/setup";
 
@@ -6,7 +8,13 @@ const ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_ENDPOINT",
   "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
   "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
   "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+  "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+  "OTEL_METRIC_EXPORT_INTERVAL",
+  "OTEL_METRIC_EXPORT_TIMEOUT",
   "DEPLOYMENT_ENV",
 ] as const;
 
@@ -43,6 +51,7 @@ describe("setupOtel", () => {
       // shutdown() clears the module-level activeHandle.
       await setupOtel({ serviceName: "cleanup" }).shutdown();
     }
+    metrics.disable();
     clearEnv();
   });
 
@@ -63,7 +72,20 @@ describe("setupOtel", () => {
   it("works with no endpoint configured (graceful no-op exporters)", () => {
     const handle = setupOtel({ serviceName: "no-endpoint" });
     expect(handle).toBeDefined();
+    expect(handle.meterProvider).toBeInstanceOf(SdkMeterProvider);
+    expect(
+      handle.getMeter("no-endpoint").createCounter("test.counter")
+    ).toBeDefined();
     expect(typeof handle.shutdown).toBe("function");
+  });
+
+  it("getMeter delegates to this setup's provider", () => {
+    const handle = setupOtel({ serviceName: "meter-handle" });
+
+    expect(handle.getMeter("orders", "1.0.0")).toBe(
+      handle.meterProvider.getMeter("orders", "1.0.0")
+    );
+    expect(metrics.getMeterProvider()).toBe(handle.meterProvider);
   });
 
   it("accepts an endpoint, headers, and resource attributes", () => {

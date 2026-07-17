@@ -1,6 +1,7 @@
 import dc from "node:diagnostics_channel";
 import {
   context,
+  metrics,
   ProxyTracerProvider,
   propagation,
   trace,
@@ -28,14 +29,16 @@ describe("setupOtel scoped mode", () => {
     // Reset the global OTel API so each test starts from a clean registry and
     // can assert global identity independently.
     trace.disable();
+    metrics.disable();
     logs.disable();
     context.disable();
     propagation.disable();
     delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
   });
 
-  it("register: false leaves the global tracer/logger providers untouched", async () => {
+  it("register: false leaves the global providers untouched", async () => {
     const beforeLogger = logs.getLoggerProvider();
+    const beforeMeter = metrics.getMeterProvider();
     const handle = setupOtel({
       serviceName: "scoped",
       endpoint: ENDPOINT,
@@ -49,10 +52,16 @@ describe("setupOtel scoped mode", () => {
       }
       // ...and the global logger provider is still the pre-setup no-op.
       expect(logs.getLoggerProvider()).toBe(beforeLogger);
+      expect(metrics.getMeterProvider()).toBe(beforeMeter);
       // The handle exposes the library's own (distinct) providers.
       expect(handle.tracerProvider).toBeDefined();
       expect(handle.loggerProvider).toBeDefined();
       expect(handle.loggerProvider).not.toBe(beforeLogger);
+      expect(handle.meterProvider).toBeDefined();
+      expect(handle.meterProvider).not.toBe(beforeMeter);
+      expect(handle.getMeter("scoped")).toBe(
+        handle.meterProvider.getMeter("scoped")
+      );
     } finally {
       await handle.shutdown();
     }
@@ -68,6 +77,7 @@ describe("setupOtel scoped mode", () => {
         expect(globalTracer.getDelegate()).toBe(handle.tracerProvider);
       }
       expect(logs.getLoggerProvider()).toBe(handle.loggerProvider);
+      expect(metrics.getMeterProvider()).toBe(handle.meterProvider);
     } finally {
       await handle.shutdown();
     }

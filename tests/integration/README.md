@@ -2,10 +2,10 @@
 
 `otel-collector.test.ts` is a true end-to-end test. Unlike the unit tests (which
 use in-memory exporters), it drives the public API — `setupOtel` →
-`withSpan` / `createLogger` → `shutdown` — against a **real OpenTelemetry
+`withSpan` / `createLogger` / `getMeter` → `shutdown` — against a **real OpenTelemetry
 Collector** over OTLP/HTTP, then reads the collector's `file`-exporter output
-back and asserts on the spans and logs it actually received: names, attributes,
-status, severity, PII scrubbing, and trace/log correlation.
+back and asserts on the spans, logs, and metrics it actually received: names,
+attributes, status, severity, PII scrubbing, and trace/log correlation.
 
 It is intentionally excluded from `bun run test` (which stays offline). It runs
 via `bun run test:integration` and needs the collector running.
@@ -28,6 +28,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run test:integration
 # (optional) eyeball the raw telemetry the collector received
 cat tests/integration/output/traces.json
 cat tests/integration/output/logs.json
+cat tests/integration/output/metrics.json
 
 # 4. Tear down
 cd tests/integration && docker compose down -v
@@ -43,10 +44,11 @@ unset, so step 3 works without the env var too. Output files land in
 - `docker-compose.yml` runs `otel/opentelemetry-collector-contrib` (pinned)
   with `collector-config.yaml`.
 - The collector receives OTLP/HTTP and writes each signal to its own file via
-  the `file` exporter (`output/traces.json`, `output/logs.json`), plus mirrors
-  everything to stdout via the `debug` exporter (`docker compose logs`).
-- The test tags every span/log with a unique per-run nonce, calls
-  `handle.shutdown()` to flush the batch processors over the wire, then polls
+  the `file` exporter (`output/traces.json`, `output/logs.json`,
+  `output/metrics.json`), plus mirrors everything to stdout via the `debug`
+  exporter (`docker compose logs`).
+- The test tags every signal with a unique per-run nonce, calls
+  `handle.shutdown()` to flush the providers over the wire, then polls
   the output files until its telemetry arrives before asserting.
 
 This is the same flow CI runs in `.github/workflows/integration.yml`.

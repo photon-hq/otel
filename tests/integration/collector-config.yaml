@@ -20,6 +20,8 @@ exporters:
     path: /output/traces.json
   file/logs:
     path: /output/logs.json
+  file/metrics:
+    path: /output/metrics.json
   # Mirrors everything to the collector's stdout (`docker compose logs`).
   debug:
     verbosity: detailed
@@ -33,3 +35,6 @@ service:
     logs:
       receivers: [otlp]
       exporters: [file/logs, debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [file/metrics, debug]

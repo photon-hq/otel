@@ -5,13 +5,13 @@ description: "Understand the design decisions behind @photon-ai/otel and how the
 
 `@photon-ai/otel` is a thin opinionated layer over OpenTelemetry SDK primitives.
 
-It does not invent a telemetry model. It chooses a small set of defaults that make traces, logs, correlation, and outbound propagation work consistently in Bun and Node.js.
+It does not invent a telemetry model. It chooses a small set of defaults that make traces, logs, metrics, correlation, and outbound propagation work consistently in Bun and Node.js.
 
 ## Public surface
 
 The package exports one entry point with these groups:
 
-- setup: `setupOtel()`, `isOtelActive()`
+- setup: `setupOtel()`, `isOtelActive()`, and the returned handle's `getMeter()` method
 - logging: `createLogger()`, `setLogLevel()`, `getLogLevel()`
 - tracing helper: `withSpan()`
 - fetch instrumentation: `instrumentFetch()`
@@ -24,7 +24,7 @@ Keeping this surface small is a design choice. Most service code should not need
 
 `setupOtel()` owns process-level OpenTelemetry initialization.
 
-It creates a resource, installs context propagation, configures trace and log providers, and optionally instruments fetch.
+It creates a resource, installs context propagation, configures trace, log, and metric providers, and optionally instruments fetch.
 
 The important OpenTelemetry primitives are:
 
@@ -38,18 +38,24 @@ The important OpenTelemetry primitives are:
 - `LoggerProvider`
 - `BatchLogRecordProcessor`
 - `OTLPLogExporter`
+- `MeterProvider`
+- `PeriodicExportingMetricReader`
+- `OTLPMetricExporter`
 
 This gives the package one predictable runtime path instead of exposing every OpenTelemetry SDK choice to each service.
 
-## Why global providers are used
+## Global and scoped providers
 
-OpenTelemetry JavaScript APIs use global providers for trace and log lookup.
+OpenTelemetry JavaScript APIs use global providers for trace, log, and metric lookup.
 
-`withSpan()` calls `trace.getTracer(...)`.
+In the default mode, setup registers all three providers globally. The package's
+`withSpan()` and `createLogger()` helpers also retain the providers built by
+setup, allowing those helpers to target the same pipeline without a global
+lookup in scoped mode.
 
-`createLogger()` calls `logs.getLogger(...)`.
-
-Both depend on global providers installed by setup. This is why setup should run before application work starts.
+The returned handle's `getMeter()` method calls its configured meter provider
+directly. This keeps metrics scoped to that setup when `register: false`;
+application code does not need to know which registration mode is active.
 
 ## Why setup is idempotent
 
@@ -67,7 +73,7 @@ That makes repeated setup calls safe in tests, CLIs, and shared bootstrap utilit
 
 ## Why OTLP/HTTP only
 
-The implementation uses OTLP over HTTP for traces and logs.
+The implementation uses OTLP over HTTP for traces, logs, and metrics.
 
 Reasons:
 
@@ -82,7 +88,7 @@ The package is opinionated here. If a service needs custom exporters or gRPC tra
 
 Local development should not require infrastructure.
 
-When no endpoint is configured, the package still installs providers but uses empty processor lists. Application code can call `withSpan()` and `createLogger()` without branching on environment.
+When no endpoint is configured, the package still installs providers but uses empty processor and reader lists. Application code can call `withSpan()`, `createLogger()`, and `otel.getMeter()` without branching on environment.
 
 This design means the same code path runs locally and in production. The deployment environment decides whether telemetry is exported.
 

@@ -66,19 +66,21 @@ The package appends signal paths:
 
 - Traces: `/v1/traces`
 - Logs: `/v1/logs`
+- Metrics: `/v1/metrics`
 
 `endpoint` is ignored when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 
 ## Signal-specific endpoints
 
-Use signal-specific environment variables when traces and logs need different destinations.
+Use signal-specific environment variables when signals need different destinations.
 
 ```bash
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://otel.example.com/v1/traces
 OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://logs.example.com/v1/logs
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=https://metrics.example.com/v1/metrics
 ```
 
-These are full URLs. The package does not append `/v1/traces` or `/v1/logs` to signal-specific variables.
+These are full URLs. The package uses signal-specific endpoint values exactly as provided.
 
 ## Headers
 
@@ -101,11 +103,16 @@ OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer prod-token,x-tenant=acme"
 
 Environment headers are merged over code headers. If the same header exists in both places, the environment value wins.
 
+Each signal also accepts `OTEL_EXPORTER_OTLP_TRACES_HEADERS`,
+`OTEL_EXPORTER_OTLP_LOGS_HEADERS`, or
+`OTEL_EXPORTER_OTLP_METRICS_HEADERS`. Signal-specific headers override both
+generic environment headers and code headers.
+
 This lets code include harmless local defaults while production injects real credentials outside the repository.
 
 ## Resource attributes
 
-`resourceAttributes` adds attributes to every span and log record.
+`resourceAttributes` adds attributes to every span, log record, and metric.
 
 ```ts
 setupOtel({
@@ -230,7 +237,7 @@ setupOtel({
 
 See [Fetch instrumentation](/guides/fetch-instrumentation) for the runtime differences and the `createInstrumentedFetch()` helper for instrumenting an SDK's fetch without touching the global.
 
-The package always excludes its own OTLP trace and log exporter endpoints from fetch instrumentation. That prevents exporter traffic from recursively tracing itself.
+The package always excludes its own OTLP exporter endpoints from fetch instrumentation. That prevents exporter traffic from recursively tracing itself.
 
 ## Environment variable precedence
 
@@ -239,7 +246,8 @@ The package always excludes its own OTLP trace and log exporter endpoints from f
 | Base OTLP endpoint | `OTEL_EXPORTER_OTLP_ENDPOINT` | `setupOtel({ endpoint })` |
 | Trace endpoint | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | base endpoint + `/v1/traces` |
 | Log endpoint | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | base endpoint + `/v1/logs` |
-| OTLP headers | `OTEL_EXPORTER_OTLP_HEADERS` | `setupOtel({ headers })` |
+| Metric endpoint | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | base endpoint + `/v1/metrics` |
+| Signal headers | signal-specific `*_HEADERS` | generic headers, then `setupOtel({ headers })` |
 | Log level | `LOG_LEVEL` | `setupOtel({ logLevel })` or `setLogLevel()` |
 | Deployment environment | `DEPLOYMENT_ENV` | `development` |
 

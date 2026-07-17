@@ -1,6 +1,6 @@
 ---
 title: "Setup"
-description: "Initialize traces, logs, context propagation, and shutdown behavior with setupOtel."
+description: "Initialize traces, logs, metrics, context propagation, and shutdown behavior with setupOtel."
 ---
 
 `setupOtel()` is the bootstrap function for the package.
@@ -16,20 +16,28 @@ const telemetry = setupOtel({
 });
 ```
 
-## What setup installs
+Keep this handle for the lifetime of the service. Use
+`telemetry.getMeter(name)` to create metrics and await `telemetry.shutdown()`
+after application work has drained.
 
-`setupOtel()` installs four global OpenTelemetry pieces:
+## What setup builds
+
+`setupOtel()` builds or configures five OpenTelemetry pieces:
 
 1. An `AsyncLocalStorageContextManager`
 2. A W3C trace-context and baggage propagator
 3. A `BasicTracerProvider`
 4. A `LoggerProvider`
+5. A `MeterProvider`
 
 The context manager is what lets active spans survive across `await` boundaries. Without it, a log emitted inside an async span would not reliably know which trace it belongs to.
 
 The propagator is what lets `traceparent` and baggage be injected into outbound requests.
 
-The tracer provider and logger provider own the span and log pipelines.
+The tracer, logger, and meter providers own the three signal pipelines. They
+are registered globally by default. With `register: false`, the providers stay
+private to the returned handle while the context manager and propagator remain
+shared process infrastructure.
 
 ## Endpoint behavior
 
@@ -37,12 +45,16 @@ When a traces endpoint is resolved, setup creates a `BatchSpanProcessor` with an
 
 When a logs endpoint is resolved, setup creates a `BatchLogRecordProcessor` with an OTLP log exporter.
 
-When an endpoint is missing, the corresponding processor list is empty. This is why the package can run locally without a collector.
+When a metrics endpoint is resolved, setup creates a
+`PeriodicExportingMetricReader` with an OTLP metric exporter.
+
+When an endpoint is missing, the corresponding processor or reader list is
+empty. This is why the package can run locally without a collector.
 
 ```ts
 setupOtel({
   serviceName: "payments-api",
-  // No endpoint: providers are installed, exporters are not.
+  // No endpoint: real providers are built, exporters are not.
 });
 ```
 
@@ -63,6 +75,21 @@ console.log(first === second); // true
 
 The first call wins until `shutdown()` clears the active handle.
 
+## Use the returned handle for metrics
+
+The handle is the safe, consumer-facing way to obtain a meter:
+
+```ts
+const requests = telemetry
+  .getMeter("payments")
+  .createCounter("payments.requests");
+```
+
+This lookup always uses the provider created by this setup call, including
+when `register: false`. `telemetry.meterProvider` remains available for
+advanced integrations that specifically require a provider; most application
+code should use `getMeter()`.
+
 ## Resource attributes
 
 Setup builds a resource with:
@@ -72,7 +99,7 @@ Setup builds a resource with:
 - `deployment.environment` from `DEPLOYMENT_ENV`, defaulting to `development`
 - any `resourceAttributes` you pass
 
-These attributes are attached to spans and logs.
+These attributes are attached to spans, logs, and metrics.
 
 ```ts
 setupOtel({
@@ -147,13 +174,14 @@ process.on("SIGTERM", async () => {
 });
 ```
 
-Shutdown does three things:
+Shutdown does four things:
 
 1. Stops the fetch instrumentation setup installed — restores `globalThis.fetch` on the wrap path, or disables the undici instrumentation on Node.
 2. Shuts down the tracer provider.
 3. Shuts down the logger provider.
+4. Shuts down the meter provider, performing a final collection and export.
 
-The provider shutdown calls are awaited with `Promise.allSettled()`, so both providers get a chance to shut down even if one fails.
+The provider shutdown calls are awaited with `Promise.allSettled()`, so every provider gets a chance to shut down even if one fails.
 
 ## Best practices
 

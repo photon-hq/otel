@@ -7,7 +7,8 @@ description: "Developer documentation for @photon-ai/otel, a small OpenTelemetry
 
 It keeps the public API intentionally small:
 
-- `setupOtel()` boots traces and logs with OTLP/HTTP exporters.
+- `setupOtel()` boots traces, logs, and metrics with OTLP/HTTP exporters.
+- `otel.getMeter(name)` creates standard metric instruments from the setup-bound provider.
 - `createLogger(module)` emits structured logs to OpenTelemetry and the console.
 - `withSpan(name, attrs, fn)` wraps sync or async work in a span.
 - `setupOtel()` auto-instruments outbound `fetch` (native undici on Node when its optional packages are installed, otherwise a `globalThis.fetch` wrap, which Bun always uses) for client spans and W3C trace propagation; `instrumentFetch()` and `createInstrumentedFetch()` expose it directly.
@@ -19,7 +20,7 @@ The package is designed for teams that want useful telemetry without repeating v
 
 Vanilla OpenTelemetry is flexible, but a small service usually needs to answer the same questions before it can emit anything useful:
 
-- Which tracer provider and logger provider should be installed?
+- Which tracer, logger, and meter providers should be installed?
 - Which OTLP exporter URLs should be used?
 - How do resource attributes like `service.name` and `deployment.environment` get attached?
 - How should logs be correlated with the active trace?
@@ -32,18 +33,21 @@ Vanilla OpenTelemetry is flexible, but a small service usually needs to answer t
 
 The package supports Bun and Node.js 20 or newer.
 
-It uses OTLP over HTTP only. When you provide `endpoint: "https://otel.example.com"` or set `OTEL_EXPORTER_OTLP_ENDPOINT`, traces are sent to `/v1/traces` and logs are sent to `/v1/logs`. Signal-specific environment variables can override those paths.
+It uses OTLP over HTTP only. When you provide `endpoint: "https://otel.example.com"` or set `OTEL_EXPORTER_OTLP_ENDPOINT`, traces are sent to `/v1/traces`, logs to `/v1/logs`, and metrics to `/v1/metrics`. Signal-specific environment variables can override those paths.
 
-If no endpoint is configured, setup still succeeds. Providers are installed, but exporters are effectively no-ops because no trace or log processor is configured. That behavior makes local development zero-config.
+If no endpoint is configured, setup still succeeds and returns real providers.
+No exporters are attached, so telemetry stays local. That behavior makes local
+development zero-config without changing application instrumentation.
 
 ## Mental model
 
-Think of the package in four layers:
+Think of the package in five layers:
 
-1. `setupOtel()` installs the global OpenTelemetry runtime pieces: context manager, propagator, tracer provider, and logger provider.
-2. `withSpan()` uses the global tracer provider to create application spans.
-3. `createLogger()` uses the global logger provider and active context so logs inside spans carry trace correlation.
-4. Fetch auto-instrumentation (native undici on Node when its optional packages are installed, otherwise the `globalThis.fetch` wrap that Bun always uses) makes outbound `fetch` carry W3C trace context to downstream services.
+1. `setupOtel()` installs the global OpenTelemetry runtime pieces: context manager, propagator, tracer provider, logger provider, and meter provider.
+2. `otel.getMeter()` creates metrics from the provider owned by that setup call.
+3. `withSpan()` creates application spans through the active tracer provider.
+4. `createLogger()` uses the active logger provider and context so logs inside spans carry trace correlation.
+5. Fetch auto-instrumentation (native undici on Node when its optional packages are installed, otherwise the `globalThis.fetch` wrap that Bun always uses) makes outbound `fetch` carry W3C trace context to downstream services.
 
 Those layers are independent enough to test directly, but they are meant to be used together in service startup code.
 
@@ -92,5 +96,6 @@ Start with [Quickstart](/quickstart), then read [Configuration](/configuration).
 - Use [Setup](/guides/setup) when wiring a real service.
 - Use [Logging](/guides/logging) when deciding module names, log levels, and exception handling.
 - Use [Spans](/guides/spans) when wrapping business operations.
+- Use [Metrics](/guides/metrics) when creating counters, histograms, or gauges.
 - Use [Fetch instrumentation](/guides/fetch-instrumentation) when tracing outbound HTTP.
 - Use [Architecture](/concepts/architecture) for the deeper design decisions.
