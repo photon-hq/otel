@@ -43,6 +43,14 @@ describe("OTLP configuration", () => {
     expect(resolveOtlpEndpoint("metrics", undefined, {})).toBeUndefined();
   });
 
+  it("uses the code endpoint when the generic environment endpoint is empty", () => {
+    expect(
+      resolveOtlpEndpoint("metrics", "https://code.example.com", {
+        OTEL_EXPORTER_OTLP_ENDPOINT: "",
+      })
+    ).toBe("https://code.example.com/v1/metrics");
+  });
+
   it("applies code, generic environment, then signal header precedence", () => {
     const headers = resolveOtlpHeaders(
       "metrics",

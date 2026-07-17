@@ -44,7 +44,7 @@ export function resolveOtlpEndpoint(
   if (signalEndpoint) {
     return signalEndpoint;
   }
-  const genericEndpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT ?? base;
+  const genericEndpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT || base;
   return genericEndpoint
     ? `${genericEndpoint.replace(TRAILING_SLASH, "")}/v1/${SIGNAL_PATH[signal]}`
     : undefined;
