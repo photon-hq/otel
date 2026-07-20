@@ -75,8 +75,9 @@ export interface SetupOtelOptions {
   instrumentFetch?: boolean | InstrumentFetchOptions;
   /**
    * Minimum log level emitted by `createLogger()` (to both OTLP and console).
-   * The `LOG_LEVEL` env var still takes precedence. Defaults to `debug` in
-   * development and `info` otherwise.
+   * The `LOG_LEVEL` env var still takes precedence. Defaults to `debug` only
+   * when `DEPLOYMENT_ENV=development`; `info` otherwise (including when unset,
+   * so embedding SDKs don't emit a debug firehose by default).
    */
   logLevel?: LogLevel;
   /**

@@ -30,9 +30,12 @@ function envLevel(): LogLevel | undefined {
 }
 
 function defaultLevel(): LogLevel {
-  return (process.env.DEPLOYMENT_ENV ?? "development") === "development"
-    ? "debug"
-    : "info";
+  // Only an explicitly-declared development environment opts into the debug
+  // firehose. An ABSENT DEPLOYMENT_ENV — the norm for SDK consumers who embed
+  // this package (e.g. via spectrum-ts) — defaults to `info`, so importing the
+  // SDK never dumps debug logs by accident. Explicit LOG_LEVEL / setLogLevel()
+  // still override. (DX #10)
+  return process.env.DEPLOYMENT_ENV === "development" ? "debug" : "info";
 }
 
 /**
@@ -41,7 +44,8 @@ function defaultLevel(): LogLevel {
  * match the rest of the package's config story):
  *   1. `LOG_LEVEL` env var
  *   2. `setLogLevel()` / `setupOtel({ logLevel })`
- *   3. environment-driven default (`debug` in development, `info` otherwise)
+ *   3. environment-driven default (`debug` only when `DEPLOYMENT_ENV=development`;
+ *      `info` otherwise, including when `DEPLOYMENT_ENV` is unset)
  */
 function resolveLevel(): LogLevel {
   return envLevel() ?? levelOverride ?? defaultLevel();
