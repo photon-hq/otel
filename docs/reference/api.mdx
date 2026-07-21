@@ -52,6 +52,7 @@ interface SetupOtelOptions {
 - Installs W3C trace-context and baggage propagation.
 - Configures OTLP/HTTP trace, log, and metric exporters when endpoints are available.
 - Supports no-endpoint local development.
+- Applies `logLevel` as a programmatic override above `LOG_LEVEL`; defaults to `info` when neither is configured.
 - Optionally instruments fetch.
 - Returns an `OtelHandle`.
 
@@ -141,7 +142,8 @@ Sets the programmatic minimum log level.
 function setLogLevel(level: LogLevel): void;
 ```
 
-`LOG_LEVEL` still wins when it is set.
+This setting takes precedence over `LOG_LEVEL`. Untyped JavaScript callers that
+pass an invalid value receive a `TypeError` before the active level changes.
 
 ## `getLogLevel()`
 
@@ -151,7 +153,9 @@ Returns the current effective log level.
 function getLogLevel(): LogLevel;
 ```
 
-The value is resolved from `LOG_LEVEL`, then programmatic override, then deployment default.
+The value is resolved from programmatic configuration, then a valid
+`LOG_LEVEL`, then the unconditional `info` default. `DEPLOYMENT_ENV` does not
+participate in logger resolution.
 
 ## `LogLevel`
 

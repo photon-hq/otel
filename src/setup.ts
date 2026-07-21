@@ -75,8 +75,10 @@ export interface SetupOtelOptions {
   instrumentFetch?: boolean | InstrumentFetchOptions;
   /**
    * Minimum log level emitted by `createLogger()` (to both OTLP and console).
-   * The `LOG_LEVEL` env var still takes precedence. Defaults to `debug` in
-   * development and `info` otherwise.
+   * Takes precedence over `LOG_LEVEL`. Defaults to `info`, independently of
+   * `DEPLOYMENT_ENV`.
+   *
+   * Invalid runtime values from untyped JavaScript callers throw a `TypeError`.
    */
   logLevel?: LogLevel;
   /**
@@ -234,7 +236,7 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
 
   const register = options.register !== false;
 
-  if (options.logLevel) {
+  if (options.logLevel !== undefined) {
     setLogLevel(options.logLevel);
   }
 

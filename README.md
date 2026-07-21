@@ -6,7 +6,7 @@ Vanilla OTel works, but the setup is verbose, the logger plumbing is awkward, an
 
 - **`setupOtel()`** — idempotent one-call bootstrap for traces + logs + metrics. Honors standard `OTEL_EXPORTER_OTLP_*` env vars.
 - **`otel.getMeter(name)`** — creates standard OpenTelemetry instruments from this setup's meter provider, with identical behavior in global and scoped mode.
-- **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and is gated by a configurable `LOG_LEVEL`.
+- **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and shares one configurable level gate.
 - **`withSpan(name, attrs?, fn)`** — wrap any sync or async function in a span; errors are recorded and PII in the error message is scrubbed before being attached to span status.
 - **Automatic `fetch` tracing** — `setupOtel()` instruments outbound `fetch` so every request gets a CLIENT span and W3C trace-context headers. On **Node** it uses the official `@opentelemetry/instrumentation-undici`; on **Bun** — whose native fetch emits nothing for the standard `diagnostics_channel`-based instrumentations — it wraps `globalThis.fetch`. Pass `instrumentFetch: { mode: "global" }` to force the wrap on both for identical spans.
 - **`sanitizeEmail` / `sanitizePhone` / `sanitizeErrorMessage`** — PII helpers you can reuse anywhere.
@@ -98,8 +98,8 @@ attribute guidance, and scoped mode.
 | `instrumentFetch(options?): FetchInstrumentation` | Low-level wrap of `globalThis.fetch` for CLIENT spans + W3C propagation. Returns `{ unpatch() }`. `setupOtel` calls this on Bun; on Node it prefers native undici. |
 | `createInstrumentedFetch(baseFetch?, options?): typeof fetch` | Returns a NEW instrumented fetch (CLIENT spans + W3C propagation) wrapping `baseFetch` (default `globalThis.fetch`) without touching the global. For SDKs that take a `fetch` option. |
 | `createLogger(module): PhotonLogger`          | Returns `{ info, warn, error, debug }`. Each call emits to OTel + `console`, correlates to active span.    |
-| `setLogLevel(level): void`                    | Set the minimum level emitted (`debug`/`info`/`warn`/`error`/`silent`). `LOG_LEVEL` env still wins.        |
-| `getLogLevel(): LogLevel`                     | Current effective level after env / override / default resolution.                                        |
+| `setLogLevel(level): void`                    | Set the minimum level emitted (`debug`/`info`/`warn`/`error`/`silent`). Programmatic configuration wins over `LOG_LEVEL`. |
+| `getLogLevel(): LogLevel`                     | Current effective level after programmatic / env / default resolution.                                   |
 | `withSpan(name, fn)`                          | Wraps `fn` (sync or async) in a span. Records exceptions and scrubs PII in error messages.                 |
 | `withSpan(name, attrs, fn)`                   | Same as above but attaches `attrs` to the span.                                                            |
 | `sanitizeEmail(input)`                        | Masks an email: `foo.bar@example.com` → `fo***@e***.com`.                                                  |
@@ -134,22 +134,29 @@ sinks share one level gate.
 Logs below the active level are dropped from **both** OTLP and the console. The level is
 resolved fresh on every call, so changes take effect immediately:
 
-1. `LOG_LEVEL` env var (`debug` | `info` | `warn` | `error` | `silent`) — wins if set.
-2. `setLogLevel(level)` or `setupOtel({ logLevel })`.
-3. Default: `debug` in development (`DEPLOYMENT_ENV` unset or `development`), `info` otherwise.
+1. `setLogLevel(level)` or `setupOtel({ logLevel })`.
+2. `LOG_LEVEL` env var (`debug` | `info` | `warn` | `error` | `silent`).
+3. Default: `info`.
+
+Logger configuration is independent of `DEPLOYMENT_ENV`; that variable only supplies
+OpenTelemetry resource metadata. Environment values are trimmed and case-insensitive. An
+invalid `LOG_LEVEL` falls back to `info` and warns once per distinct value, while an invalid
+programmatic value throws a `TypeError` immediately (useful for untyped JavaScript callers).
 
 ```ts
 import { setLogLevel } from "@photon-ai/otel";
 
 setLogLevel("warn"); // debug + info now suppressed everywhere
-// or set LOG_LEVEL=warn in the environment, which overrides the call above
+// LOG_LEVEL is used only when no programmatic level has been set
 ```
 
 `"silent"` suppresses everything, including errors.
 
 ## Configuration
 
-Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
+Standard OpenTelemetry exporter env vars take precedence over endpoint and
+header options. Logger and deployment metadata variables follow the behavior
+listed below:
 
 | Variable                                  | Effect                                                  |
 | ----------------------------------------- | ------------------------------------------------------- |
@@ -161,8 +168,8 @@ Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
 | `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`     | Trace-, log-, or metric-specific headers; override generic and code headers. |
 | `OTEL_METRIC_EXPORT_INTERVAL`             | Metric export interval in milliseconds. Defaults to `60000`. |
 | `OTEL_METRIC_EXPORT_TIMEOUT`              | Metric export timeout in milliseconds. Defaults to `30000`. |
-| `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`. Also drives the default log level. |
-| `LOG_LEVEL`                               | Minimum log level: `debug` \| `info` \| `warn` \| `error` \| `silent`. Overrides `setLogLevel()` / `setupOtel({ logLevel })`. |
+| `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`; does not affect logging. |
+| `LOG_LEVEL`                               | Minimum log level: `debug` \| `info` \| `warn` \| `error` \| `silent`. Used when no programmatic level is set; defaults to `info`. |
 
 ## Automatic fetch instrumentation
 

@@ -167,46 +167,105 @@ describe("log level gating", () => {
     expect(console.error).not.toHaveBeenCalled();
   });
 
-  it("lets LOG_LEVEL env win over setLogLevel()", () => {
+  it("lets setLogLevel() win over LOG_LEVEL", () => {
     setLogLevel("debug");
     process.env.LOG_LEVEL = "error";
     const log = createLogger("svc");
+    log.debug("d");
     log.info("i");
     log.error("e");
 
-    expect(getLogLevel()).toBe("error");
+    expect(getLogLevel()).toBe("debug");
     expect(exporter.getFinishedLogRecords().map((r) => r.severityText)).toEqual(
-      ["ERROR"]
+      ["DEBUG", "INFO", "ERROR"]
     );
   });
 });
 
 describe("getLogLevel resolution", () => {
   afterEach(() => {
+    clearEnv();
     vi.restoreAllMocks();
   });
 
-  it("env-driven default is debug in development", async () => {
+  it.each([
+    { deploymentEnv: undefined, name: "unset" },
+    { deploymentEnv: "development", name: "development" },
+    { deploymentEnv: "staging", name: "staging" },
+    { deploymentEnv: "production", name: "production" },
+  ])("defaults to info when DEPLOYMENT_ENV is $name", async ({
+    deploymentEnv,
+  }) => {
     vi.resetModules();
     delete process.env.LOG_LEVEL;
-    process.env.DEPLOYMENT_ENV = "development";
+    if (deploymentEnv === undefined) {
+      delete process.env.DEPLOYMENT_ENV;
+    } else {
+      process.env.DEPLOYMENT_ENV = deploymentEnv;
+    }
+
+    const fresh = await import("../src/logger");
+    expect(fresh.getLogLevel()).toBe("info");
+  });
+
+  it("trims and lowercases a valid LOG_LEVEL", async () => {
+    vi.resetModules();
+    process.env.LOG_LEVEL = " DEBUG ";
+
     const fresh = await import("../src/logger");
     expect(fresh.getLogLevel()).toBe("debug");
   });
 
-  it("env-driven default is info outside development", async () => {
+  it("treats an empty LOG_LEVEL as unset without warning", async () => {
     vi.resetModules();
-    delete process.env.LOG_LEVEL;
-    process.env.DEPLOYMENT_ENV = "production";
+    process.env.LOG_LEVEL = "   ";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
     const fresh = await import("../src/logger");
     expect(fresh.getLogLevel()).toBe("info");
+    expect(warn).not.toHaveBeenCalled();
   });
 
-  it("ignores an invalid LOG_LEVEL value", async () => {
+  it("warns once per distinct invalid normalized LOG_LEVEL", async () => {
     vi.resetModules();
-    process.env.LOG_LEVEL = "loud";
-    process.env.DEPLOYMENT_ENV = "production";
+    exporter.reset();
+    process.env.LOG_LEVEL = " LOUD ";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
     const fresh = await import("../src/logger");
     expect(fresh.getLogLevel()).toBe("info");
+    expect(fresh.getLogLevel()).toBe("info");
+    process.env.LOG_LEVEL = "loud";
+    expect(fresh.getLogLevel()).toBe("info");
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    process.env.LOG_LEVEL = "verbose";
+    expect(fresh.getLogLevel()).toBe("info");
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(exporter.getFinishedLogRecords()).toHaveLength(0);
+  });
+
+  it("does not inspect invalid LOG_LEVEL when an override is active", async () => {
+    vi.resetModules();
+    process.env.LOG_LEVEL = "verbose";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const fresh = await import("../src/logger");
+    fresh.setLogLevel("warn");
+    expect(fresh.getLogLevel()).toBe("warn");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid JavaScript values without changing the override", async () => {
+    vi.resetModules();
+    const fresh = await import("../src/logger");
+    fresh.setLogLevel("warn");
+
+    expect(() =>
+      Reflect.apply(fresh.setLogLevel, undefined, ["verbose"])
+    ).toThrowError(
+      "Invalid log level; expected one of: debug, info, warn, error, silent."
+    );
+    expect(fresh.getLogLevel()).toBe("warn");
   });
 });
