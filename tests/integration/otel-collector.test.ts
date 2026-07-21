@@ -306,9 +306,10 @@ let errorSpanRejected = false;
 
 beforeAll(async () => {
   process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??= "http://localhost:4318";
-  // Keep level resolution deterministic regardless of the CI environment
-  // (LOG_LEVEL would otherwise win over the logLevel option below).
-  delete process.env.LOG_LEVEL;
+  // Deliberately conflict with the programmatic level below: SDK configuration
+  // must win while deployment metadata keeps its independent default.
+  process.env.LOG_LEVEL = "silent";
+  delete process.env.DEPLOYMENT_ENV;
 
   const handle = setupOtel({
     serviceName: SERVICE_NAME,
@@ -398,7 +399,7 @@ describe("real OTLP/HTTP round-trip to an OpenTelemetry Collector", () => {
     expect(span?.resource["service.name"]).toBe(SERVICE_NAME);
     expect(span?.resource["service.version"]).toBe(PHOTON_OTEL_VERSION);
     expect(span?.resource["test.nonce"]).toBe(nonce);
-    expect(span?.resource["deployment.environment"]).toBeDefined();
+    expect(span?.resource["deployment.environment"]).toBe("development");
   });
 
   it("delivers the error span with ERROR status and a PII-scrubbed message", () => {

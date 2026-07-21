@@ -97,21 +97,25 @@ The active level is resolved fresh on every log call.
 
 Resolution order:
 
-1. `LOG_LEVEL`
-2. `setLogLevel()` or `setupOtel({ logLevel })`
-3. default level from `DEPLOYMENT_ENV`
+1. `setLogLevel()` or `setupOtel({ logLevel })`
+2. a valid `LOG_LEVEL`
+3. `info`
 
 ```ts
 import { getLogLevel, setLogLevel } from "@photon-ai/otel";
 
 setLogLevel("warn");
-console.log(getLogLevel()); // "warn", unless LOG_LEVEL is set
+console.log(getLogLevel()); // "warn", even if LOG_LEVEL is set
 ```
 
-Defaults:
+`DEPLOYMENT_ENV` only supplies the `deployment.environment` telemetry resource
+attribute. It never changes the logger level.
 
-- `debug` when `DEPLOYMENT_ENV` is unset or `development`
-- `info` otherwise
+Environment values are trimmed and case-insensitive. Empty values behave as
+unset. An invalid active `LOG_LEVEL` warns once per distinct normalized value
+and falls back to `info`; it is not inspected when a programmatic level is
+active. Invalid programmatic values from untyped JavaScript callers throw a
+`TypeError` immediately.
 
 Allowed values:
 
@@ -187,5 +191,5 @@ In a backend that supports trace/log correlation, that log can be opened from th
 - Use stable module names.
 - Attach attributes for business identifiers and operational context.
 - Pass exceptions as the third argument instead of stringifying them.
-- Set `LOG_LEVEL` in deployment configuration.
+- Prefer a programmatic level when the host application owns logging policy; use `LOG_LEVEL` as the deployment fallback otherwise.
 - Avoid logging raw PII, secrets, or full request bodies.

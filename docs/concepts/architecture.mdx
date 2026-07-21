@@ -90,11 +90,13 @@ Local development should not require infrastructure.
 
 When no endpoint is configured, the package still installs providers but uses empty processor and reader lists. Application code can call `withSpan()`, `createLogger()`, and `otel.getMeter()` without branching on environment.
 
-This design means the same code path runs locally and in production. The deployment environment decides whether telemetry is exported.
+This design means the same code path runs locally and in production. Deployment
+configuration decides whether telemetry is exported.
 
-## Why environment variables win
+## Why exporter environment variables win
 
-Standard OpenTelemetry environment variables override code-level options.
+Standard OpenTelemetry exporter environment variables override code-level
+endpoint and header options.
 
 This follows OpenTelemetry configuration expectations and keeps deployment concerns outside application code.
 
@@ -102,7 +104,11 @@ For example:
 
 - production can inject real exporter credentials through `OTEL_EXPORTER_OTLP_HEADERS`
 - staging can point to a different collector through `OTEL_EXPORTER_OTLP_ENDPOINT`
-- incident response can raise or lower `LOG_LEVEL` without a code deploy
+- incident response can raise or lower `LOG_LEVEL` without a code deploy when the host application has not set a programmatic level
+
+Logger configuration intentionally follows a different SDK-first rule:
+`setLogLevel()` or `setupOtel({ logLevel })` wins over `LOG_LEVEL`, and the
+unconfigured default is always `info`.
 
 ## Logging architecture
 
@@ -112,7 +118,8 @@ This deliberately avoids choosing between local developer ergonomics and structu
 
 The log-level gate runs before both sinks. A suppressed debug message does not reach OpenTelemetry and does not reach the console.
 
-The logger resolves the active level on each call so environment or programmatic changes take effect immediately.
+The logger resolves the active level on each call so environment changes take
+effect immediately until a programmatic override is active.
 
 ## Span helper architecture
 

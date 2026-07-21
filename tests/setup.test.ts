@@ -2,6 +2,7 @@ import dc from "node:diagnostics_channel";
 import { metrics } from "@opentelemetry/api";
 import { MeterProvider as SdkMeterProvider } from "@opentelemetry/sdk-metrics";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getLogLevel, setLogLevel } from "../src/logger";
 import { isOtelActive, setupOtel } from "../src/setup";
 
 const ENV_KEYS = [
@@ -16,6 +17,7 @@ const ENV_KEYS = [
   "OTEL_METRIC_EXPORT_INTERVAL",
   "OTEL_METRIC_EXPORT_TIMEOUT",
   "DEPLOYMENT_ENV",
+  "LOG_LEVEL",
 ] as const;
 
 // Fetch instrumentation has two strategies and only one touches
@@ -77,6 +79,20 @@ describe("setupOtel", () => {
       handle.getMeter("no-endpoint").createCounter("test.counter")
     ).toBeDefined();
     expect(typeof handle.shutdown).toBe("function");
+  });
+
+  it("rejects an invalid JavaScript logLevel before changing state", () => {
+    setLogLevel("warn");
+
+    expect(() =>
+      Reflect.apply(setupOtel, undefined, [
+        { serviceName: "invalid-level", logLevel: "verbose" },
+      ])
+    ).toThrowError(
+      "Invalid log level; expected one of: debug, info, warn, error, silent."
+    );
+    expect(isOtelActive()).toBe(false);
+    expect(getLogLevel()).toBe("warn");
   });
 
   it("getMeter delegates to this setup's provider", () => {

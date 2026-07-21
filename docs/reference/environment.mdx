@@ -1,15 +1,17 @@
 ---
 title: "Environment reference"
-description: "Environment variables recognized by @photon-ai/otel and how they override code options."
+description: "Environment variables recognized by @photon-ai/otel and their precedence and fallback behavior."
 ---
 
 This package follows standard OpenTelemetry environment variable precedence for OTLP exporter configuration.
 
-Environment variables are deployment-owned configuration. They override code defaults where applicable.
+Environment variables are deployment-owned configuration. Standard
+OpenTelemetry exporter variables override code defaults where applicable;
+`LOG_LEVEL` is used only when no programmatic logger level is active.
 
 ## Summary
 
-| Variable | Purpose | Overrides |
+| Variable | Purpose | Precedence or fallback |
 | --- | --- | --- |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP endpoint | `setupOtel({ endpoint })` |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Full traces endpoint | base endpoint for traces |
@@ -19,8 +21,8 @@ Environment variables are deployment-owned configuration. They override code def
 | `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS` | Signal-specific exporter headers | generic and code headers |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds | default `60000` |
 | `OTEL_METRIC_EXPORT_TIMEOUT` | Metric export timeout in milliseconds | default `30000` |
-| `DEPLOYMENT_ENV` | deployment resource attribute and default log-level input | default `development` |
-| `LOG_LEVEL` | logger minimum severity | `setupOtel({ logLevel })` and `setLogLevel()` |
+| `DEPLOYMENT_ENV` | deployment resource attribute | default `development` |
+| `LOG_LEVEL` | logger minimum severity | programmatic level wins; otherwise default `info` |
 
 ## `OTEL_EXPORTER_OTLP_ENDPOINT`
 
@@ -118,10 +120,7 @@ The value is attached to telemetry as `deployment.environment`.
 
 If unset, the package uses `development`.
 
-It also controls the default log level:
-
-- `development` or unset: `debug`
-- any other value: `info`
+It does not participate in logger-level resolution.
 
 ## `LOG_LEVEL`
 
@@ -139,9 +138,13 @@ Allowed values:
 - `error`
 - `silent`
 
-Invalid values are ignored.
+Values are trimmed and case-insensitive. Empty values are treated as unset.
+Invalid values warn once per distinct normalized value and fall back to `info`.
 
-`LOG_LEVEL` is checked on every log call and wins over both `setupOtel({ logLevel })` and `setLogLevel()`.
+When no programmatic level is active, `LOG_LEVEL` is checked on every log call
+so deployment changes take effect immediately. Both `setupOtel({ logLevel })`
+and `setLogLevel()` take precedence over it. If neither source supplies a valid
+level, the logger defaults to `info`.
 
 ## Local development example
 

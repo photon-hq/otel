@@ -11,6 +11,8 @@ export type LogAttrs = Record<string, string | number | boolean | undefined>;
  */
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
+const LOG_LEVELS = ["debug", "info", "warn", "error", "silent"] as const;
+const DEFAULT_LOG_LEVEL: LogLevel = "info";
 const LEVEL_SEVERITY: Record<LogLevel, number> = {
   debug: SeverityNumber.DEBUG, // 5
   info: SeverityNumber.INFO, // 9
@@ -20,42 +22,62 @@ const LEVEL_SEVERITY: Record<LogLevel, number> = {
 };
 
 let levelOverride: LogLevel | undefined;
+const warnedInvalidEnvLevels = new Set<string>();
+
+function isLogLevel(value: unknown): value is LogLevel {
+  return LOG_LEVELS.some((level) => level === value);
+}
 
 function envLevel(): LogLevel | undefined {
-  const raw = process.env.LOG_LEVEL?.toLowerCase();
-  if (raw && raw in LEVEL_SEVERITY) {
-    return raw as LogLevel;
+  const raw = process.env.LOG_LEVEL;
+  if (raw === undefined) {
+    return;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) {
+    return;
+  }
+  if (isLogLevel(normalized)) {
+    return normalized;
+  }
+
+  if (!warnedInvalidEnvLevels.has(normalized)) {
+    warnedInvalidEnvLevels.add(normalized);
+    console.warn(
+      `[@photon-ai/otel] Ignoring invalid LOG_LEVEL ${JSON.stringify(raw)}; expected one of: ${LOG_LEVELS.join(", ")}. Using ${DEFAULT_LOG_LEVEL}.`
+    );
   }
   return;
 }
 
-function defaultLevel(): LogLevel {
-  return (process.env.DEPLOYMENT_ENV ?? "development") === "development"
-    ? "debug"
-    : "info";
-}
-
 /**
  * Resolve the active level fresh on each call so that `LOG_LEVEL` changes and
- * `setLogLevel()` both take effect immediately. Resolution order (env wins, to
- * match the rest of the package's config story):
- *   1. `LOG_LEVEL` env var
- *   2. `setLogLevel()` / `setupOtel({ logLevel })`
- *   3. environment-driven default (`debug` in development, `info` otherwise)
+ * `setLogLevel()` both take effect immediately. Resolution order:
+ *   1. `setLogLevel()` / `setupOtel({ logLevel })`
+ *   2. `LOG_LEVEL` env var
+ *   3. `info`
  */
 function resolveLevel(): LogLevel {
-  return envLevel() ?? levelOverride ?? defaultLevel();
+  return levelOverride ?? envLevel() ?? DEFAULT_LOG_LEVEL;
 }
 
 /**
  * Programmatically set the minimum log level. Takes effect immediately for
- * subsequent logs. `LOG_LEVEL` env var still wins if set.
+ * subsequent logs and takes precedence over `LOG_LEVEL`.
+ *
+ * Invalid runtime values from untyped JavaScript callers throw a `TypeError`.
  */
 export function setLogLevel(level: LogLevel): void {
+  if (!isLogLevel(level)) {
+    throw new TypeError(
+      `Invalid log level; expected one of: ${LOG_LEVELS.join(", ")}.`
+    );
+  }
   levelOverride = level;
 }
 
-/** Current effective log level, after env / override / default resolution. */
+/** Current effective log level after programmatic / env / default resolution. */
 export function getLogLevel(): LogLevel {
   return resolveLevel();
 }

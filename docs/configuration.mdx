@@ -3,12 +3,14 @@ title: "Configuration"
 description: "Configure service identity, OTLP endpoints, headers, resource attributes, fetch instrumentation, and log levels."
 ---
 
-`setupOtel()` accepts code-level defaults, while standard OpenTelemetry environment variables keep final control in deployment environments.
+`setupOtel()` accepts application-owned configuration. Standard OpenTelemetry
+environment variables keep final control over exporter destinations and
+credentials, while an explicit SDK log level remains authoritative.
 
 That split is intentional:
 
-- Application code owns stable identity like `serviceName`.
-- Deployment configuration owns destinations, credentials, and runtime log level.
+- Application code owns stable identity and explicit SDK behavior such as `serviceName` and `logLevel`.
+- Deployment configuration owns destinations and credentials, and can supply `LOG_LEVEL` when code leaves the level unset.
 
 ## Basic options
 
@@ -142,14 +144,12 @@ Avoid putting per-request values in resource attributes. Use span attributes or 
 
 If unset, it defaults to `development`.
 
-It also affects the default log level:
-
-- `debug` when `DEPLOYMENT_ENV` is unset or `development`
-- `info` in every other environment
+This value only describes telemetry resource metadata. It does not affect the
+logger level.
 
 ## Log level
 
-You can set a code default:
+You can set the application-owned level in code:
 
 ```ts
 setupOtel({
@@ -158,13 +158,17 @@ setupOtel({
 });
 ```
 
-Or set `LOG_LEVEL`:
+Or use `LOG_LEVEL` when the host application does not set a level:
 
 ```bash
 LOG_LEVEL=warn
 ```
 
-`LOG_LEVEL` wins over `setupOtel({ logLevel })` and `setLogLevel()`.
+Resolution order is:
+
+1. `setLogLevel()` or `setupOtel({ logLevel })`
+2. a valid `LOG_LEVEL`
+3. `info`
 
 Allowed values are:
 
@@ -175,6 +179,11 @@ Allowed values are:
 - `silent`
 
 `silent` suppresses all logs, including errors.
+
+Environment values are trimmed and case-insensitive; an empty value is treated
+as unset. An invalid `LOG_LEVEL` warns once per distinct normalized value and
+falls back to `info`. Invalid programmatic values from untyped JavaScript callers
+throw a `TypeError` before changing logger or setup state.
 
 ## Fetch instrumentation
 
@@ -248,7 +257,7 @@ The package always excludes its own OTLP exporter endpoints from fetch instrumen
 | Log endpoint | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | base endpoint + `/v1/logs` |
 | Metric endpoint | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | base endpoint + `/v1/metrics` |
 | Signal headers | signal-specific `*_HEADERS` | generic headers, then `setupOtel({ headers })` |
-| Log level | `LOG_LEVEL` | `setupOtel({ logLevel })` or `setLogLevel()` |
+| Log level | `setupOtel({ logLevel })` or `setLogLevel()` | `LOG_LEVEL`, then `info` |
 | Deployment environment | `DEPLOYMENT_ENV` | `development` |
 
 ## Best practices
@@ -257,5 +266,5 @@ The package always excludes its own OTLP exporter endpoints from fetch instrumen
 - Always set `serviceName`.
 - Set `serviceVersion` from your release artifact when possible.
 - Prefer stable resource attributes over high-cardinality request values.
-- Use `LOG_LEVEL=debug` temporarily when debugging production incidents, then return to `info` or higher.
+- Use `LOG_LEVEL=debug` temporarily only when the application has not set a programmatic level; otherwise change the explicit SDK configuration.
 - Avoid putting secrets in URL query strings (fetch spans include `url.full`); when unavoidable, strip them with the `redactUrl` option and the `sanitizeUrl()` helper.
