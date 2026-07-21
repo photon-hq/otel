@@ -9,6 +9,8 @@ jobs:
     uses: photon-hq/buildspace/.github/workflows/typescript-service-release.yaml@main
     permissions:
       contents: write
+      # GitHub validates nested job permissions before evaluating job `if`s.
+      packages: write
       pull-requests: read
     with:
       service-name: photon-otel
