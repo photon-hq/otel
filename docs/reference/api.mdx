@@ -151,7 +151,9 @@ Returns the current effective log level.
 function getLogLevel(): LogLevel;
 ```
 
-The value is resolved from `LOG_LEVEL`, then programmatic override, then deployment default.
+The value is resolved from `LOG_LEVEL`, then programmatic override, then the raw
+`DEPLOYMENT_ENV` value (`debug` only for explicit `development`; `info`
+otherwise, including when unset).
 
 ## `LogLevel`
 

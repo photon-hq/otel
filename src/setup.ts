@@ -76,8 +76,8 @@ export interface SetupOtelOptions {
   /**
    * Minimum log level emitted by `createLogger()` (to both OTLP and console).
    * The `LOG_LEVEL` env var still takes precedence. Defaults to `debug` only
-   * when `DEPLOYMENT_ENV=development`; `info` otherwise (including when unset,
-   * so embedding SDKs don't emit a debug firehose by default).
+   * when `DEPLOYMENT_ENV=development`; `info` otherwise, including when the
+   * variable is unset.
    */
   logLevel?: LogLevel;
   /**

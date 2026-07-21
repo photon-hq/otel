@@ -190,34 +190,31 @@ describe("getLogLevel resolution", () => {
     vi.resetModules();
     delete process.env.LOG_LEVEL;
     process.env.DEPLOYMENT_ENV = "development";
-    const fresh = await import("../src/logger");
-    expect(fresh.getLogLevel()).toBe("debug");
+    const loggerModule = await import("../src/logger");
+    expect(loggerModule.getLogLevel()).toBe("debug");
   });
 
-  // DX #10: an ABSENT DEPLOYMENT_ENV (the norm for SDK consumers) must default
-  // to `info`, not `debug` — importing spectrum-ts should not turn on a debug
-  // firehose. Only an explicit `development` opts into debug (case above).
   it("env-driven default is info when DEPLOYMENT_ENV is unset", async () => {
     vi.resetModules();
     delete process.env.LOG_LEVEL;
     delete process.env.DEPLOYMENT_ENV;
-    const fresh = await import("../src/logger");
-    expect(fresh.getLogLevel()).toBe("info");
+    const loggerModule = await import("../src/logger");
+    expect(loggerModule.getLogLevel()).toBe("info");
   });
 
   it("env-driven default is info outside development", async () => {
     vi.resetModules();
     delete process.env.LOG_LEVEL;
     process.env.DEPLOYMENT_ENV = "production";
-    const fresh = await import("../src/logger");
-    expect(fresh.getLogLevel()).toBe("info");
+    const loggerModule = await import("../src/logger");
+    expect(loggerModule.getLogLevel()).toBe("info");
   });
 
   it("ignores an invalid LOG_LEVEL value", async () => {
     vi.resetModules();
     process.env.LOG_LEVEL = "loud";
     process.env.DEPLOYMENT_ENV = "production";
-    const fresh = await import("../src/logger");
-    expect(fresh.getLogLevel()).toBe("info");
+    const loggerModule = await import("../src/logger");
+    expect(loggerModule.getLogLevel()).toBe("info");
   });
 });

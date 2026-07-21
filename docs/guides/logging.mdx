@@ -113,6 +113,10 @@ Defaults:
 - `debug` only when `DEPLOYMENT_ENV` is `development`
 - `info` otherwise, including when `DEPLOYMENT_ENV` is unset
 
+> **Upgrading from v3.2.0:** an unset `DEPLOYMENT_ENV` previously selected
+> `debug`. Set `LOG_LEVEL=debug` to preserve the old verbosity without changing
+> the deployment identity.
+
 Allowed values:
 
 - `debug`

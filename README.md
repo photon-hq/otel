@@ -138,6 +138,10 @@ resolved fresh on every call, so changes take effect immediately:
 2. `setLogLevel(level)` or `setupOtel({ logLevel })`.
 3. Default: `debug` only when `DEPLOYMENT_ENV=development`; `info` otherwise (including when `DEPLOYMENT_ENV` is unset).
 
+**Upgrading from v3.2.0:** an unset `DEPLOYMENT_ENV` previously selected `debug`.
+New releases select `info`; set `LOG_LEVEL=debug` to preserve the old verbosity without
+changing the deployment identity.
+
 ```ts
 import { setLogLevel } from "@photon-ai/otel";
 
@@ -161,7 +165,7 @@ Standard OpenTelemetry env vars always take precedence over `SetupOtelOptions`:
 | `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS`     | Trace-, log-, or metric-specific headers; override generic and code headers. |
 | `OTEL_METRIC_EXPORT_INTERVAL`             | Metric export interval in milliseconds. Defaults to `60000`. |
 | `OTEL_METRIC_EXPORT_TIMEOUT`              | Metric export timeout in milliseconds. Defaults to `30000`. |
-| `DEPLOYMENT_ENV`                          | Attached as `deployment.environment` resource attribute. Defaults to `development`. Also drives the default log level. |
+| `DEPLOYMENT_ENV`                          | Attached as `deployment.environment`; only that resource attribute falls back to `development` when unset. Logging falls back to `info` unless the value is explicitly `development`. |
 | `LOG_LEVEL`                               | Minimum log level: `debug` \| `info` \| `warn` \| `error` \| `silent`. Overrides `setLogLevel()` / `setupOtel({ logLevel })`. |
 
 ## Automatic fetch instrumentation

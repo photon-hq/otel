@@ -140,9 +140,10 @@ Avoid putting per-request values in resource attributes. Use span attributes or 
 
 `DEPLOYMENT_ENV` is attached as the resource attribute `deployment.environment`.
 
-If unset, it defaults to `development`.
+If unset, only that resource attribute defaults to `development`. Log-level
+resolution still sees the variable as unset and defaults to `info`.
 
-It also affects the default log level:
+The raw environment value selects the default log level:
 
 - `debug` only when `DEPLOYMENT_ENV` is `development`
 - `info` otherwise, including when `DEPLOYMENT_ENV` is unset
@@ -249,7 +250,7 @@ The package always excludes its own OTLP exporter endpoints from fetch instrumen
 | Metric endpoint | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | base endpoint + `/v1/metrics` |
 | Signal headers | signal-specific `*_HEADERS` | generic headers, then `setupOtel({ headers })` |
 | Log level | `LOG_LEVEL` | `setupOtel({ logLevel })` or `setLogLevel()` |
-| Deployment environment | `DEPLOYMENT_ENV` | `development` |
+| `deployment.environment` resource attribute | `DEPLOYMENT_ENV` | `development` |
 
 ## Best practices
 

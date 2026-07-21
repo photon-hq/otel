@@ -30,11 +30,8 @@ function envLevel(): LogLevel | undefined {
 }
 
 function defaultLevel(): LogLevel {
-  // Only an explicitly-declared development environment opts into the debug
-  // firehose. An ABSENT DEPLOYMENT_ENV — the norm for SDK consumers who embed
-  // this package (e.g. via spectrum-ts) — defaults to `info`, so importing the
-  // SDK never dumps debug logs by accident. Explicit LOG_LEVEL / setLogLevel()
-  // still override. (DX #10)
+  // Read the raw env value: the resource attribute's separate `development`
+  // fallback must not opt an embedding SDK into debug logging.
   return process.env.DEPLOYMENT_ENV === "development" ? "debug" : "info";
 }
 

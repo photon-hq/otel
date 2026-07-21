@@ -1,7 +1,7 @@
 import dc from "node:diagnostics_channel";
 import { metrics } from "@opentelemetry/api";
 import { MeterProvider as SdkMeterProvider } from "@opentelemetry/sdk-metrics";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isOtelActive, setupOtel } from "../src/setup";
 
 const ENV_KEYS = [
@@ -16,6 +16,7 @@ const ENV_KEYS = [
   "OTEL_METRIC_EXPORT_INTERVAL",
   "OTEL_METRIC_EXPORT_TIMEOUT",
   "DEPLOYMENT_ENV",
+  "LOG_LEVEL",
 ] as const;
 
 // Fetch instrumentation has two strategies and only one touches
@@ -67,6 +68,24 @@ describe("setupOtel", () => {
     const first = setupOtel({ serviceName: "test-svc" });
     const second = setupOtel({ serviceName: "different-svc" });
     expect(second).toBe(first);
+  });
+
+  it("lets logLevel override the deployment default but not LOG_LEVEL", async () => {
+    vi.resetModules();
+    process.env.DEPLOYMENT_ENV = "development";
+    const otelModule = await import("../src/index");
+    const handle = otelModule.setupOtel({
+      serviceName: "log-level-precedence",
+      logLevel: "warn",
+    });
+    try {
+      expect(otelModule.getLogLevel()).toBe("warn");
+
+      process.env.LOG_LEVEL = "error";
+      expect(otelModule.getLogLevel()).toBe("error");
+    } finally {
+      await handle.shutdown();
+    }
   });
 
   it("works with no endpoint configured (graceful no-op exporters)", () => {

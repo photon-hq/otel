@@ -19,7 +19,7 @@ Environment variables are deployment-owned configuration. They override code def
 | `OTEL_EXPORTER_OTLP_<SIGNAL>_HEADERS` | Signal-specific exporter headers | generic and code headers |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export interval in milliseconds | default `60000` |
 | `OTEL_METRIC_EXPORT_TIMEOUT` | Metric export timeout in milliseconds | default `30000` |
-| `DEPLOYMENT_ENV` | deployment resource attribute and default log-level input | default `development` |
+| `DEPLOYMENT_ENV` | deployment resource attribute and default log-level selector | resource attribute uses `development` when unset; logger uses `info` |
 | `LOG_LEVEL` | logger minimum severity | `setupOtel({ logLevel })` and `setLogLevel()` |
 
 ## `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -116,9 +116,11 @@ DEPLOYMENT_ENV=production
 
 The value is attached to telemetry as `deployment.environment`.
 
-If unset, the package uses `development`.
+If unset, only the `deployment.environment` resource attribute uses
+`development`. The logger reads the raw variable and therefore still sees it as
+unset.
 
-It also controls the default log level:
+The raw value separately controls the default log level:
 
 - `development`: `debug`
 - any other value, including unset: `info`
