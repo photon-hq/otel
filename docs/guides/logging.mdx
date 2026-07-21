@@ -110,8 +110,8 @@ console.log(getLogLevel()); // "warn", unless LOG_LEVEL is set
 
 Defaults:
 
-- `debug` when `DEPLOYMENT_ENV` is unset or `development`
-- `info` otherwise
+- `debug` only when `DEPLOYMENT_ENV` is `development`
+- `info` otherwise, including when `DEPLOYMENT_ENV` is unset
 
 Allowed values:
 

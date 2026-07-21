@@ -136,7 +136,7 @@ resolved fresh on every call, so changes take effect immediately:
 
 1. `LOG_LEVEL` env var (`debug` | `info` | `warn` | `error` | `silent`) — wins if set.
 2. `setLogLevel(level)` or `setupOtel({ logLevel })`.
-3. Default: `debug` in development (`DEPLOYMENT_ENV` unset or `development`), `info` otherwise.
+3. Default: `debug` only when `DEPLOYMENT_ENV=development`; `info` otherwise (including when `DEPLOYMENT_ENV` is unset).
 
 ```ts
 import { setLogLevel } from "@photon-ai/otel";

@@ -144,8 +144,8 @@ If unset, it defaults to `development`.
 
 It also affects the default log level:
 
-- `debug` when `DEPLOYMENT_ENV` is unset or `development`
-- `info` in every other environment
+- `debug` only when `DEPLOYMENT_ENV` is `development`
+- `info` otherwise, including when `DEPLOYMENT_ENV` is unset
 
 ## Log level
 
