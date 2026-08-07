@@ -1,1 +1,1 @@
-export const PHOTON_OTEL_VERSION = "1.1.0";
+export const PHOTON_OTEL_VERSION = "3.4.0";
