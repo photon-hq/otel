@@ -109,9 +109,16 @@ endpoint. The runtime reuses the main Resource; it intentionally has no
 
 ```ts
 interface OptionOtelHandle {
-  createLogger(name: string, version?: string): OptionOtelLogger;
+  createLogger(name: string, version?: string): {
+    emit(record: Omit<LogRecord, "context">): void;
+  };
   hasActiveSpan(): boolean;
-  propagation: OptionOtelPropagation;
+  propagation: {
+    capture(): Context;
+    extract(headers: Headers): Context | undefined;
+    inject(headers: Headers, captured?: Context): void;
+    run<T>(captured: Context, fn: () => T): T;
+  };
   withSpan<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
   withSpan<T>(
     name: string,

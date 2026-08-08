@@ -16,8 +16,6 @@ export {
 } from "./logger";
 export {
   type OptionOtelHandle,
-  type OptionOtelLogger,
-  type OptionOtelPropagation,
   type SetupOptionOtelOptions,
   setupOptionOtel,
 } from "./option-runtime";

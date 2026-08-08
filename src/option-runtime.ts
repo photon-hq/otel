@@ -2,6 +2,8 @@ import {
   type Attributes,
   type Context,
   createContextKey,
+  defaultTextMapGetter,
+  defaultTextMapSetter,
   diag,
   ROOT_CONTEXT,
   type Span,
@@ -43,61 +45,33 @@ export interface SetupOptionOtelOptions {
   headers?: Record<string, string>;
 }
 
-export interface OptionOtelLogger {
-  emit: (record: Omit<LogRecord, "context">) => void;
-}
-
-export interface OptionOtelPropagation {
-  /** Capture the current context so delayed iterators can re-enter it. */
-  capture: () => Context;
-  /** Extract a valid Developer parent from the fixed internal header. */
-  extract: (headers: Headers) => Context | undefined;
-  /** Inject the current or explicitly captured Developer context. */
-  inject: (headers: Headers, captured?: Context) => void;
-  /** Run a callback in this runtime's isolated async context. */
-  run: <T>(captured: Context, fn: () => T) => T;
-}
-
-export interface OptionOtelWithSpan {
-  <T>(name: string, fn: () => Promise<T> | T): Promise<T>;
-  <T>(
+export interface OptionOtelHandle {
+  createLogger(
+    name: string,
+    version?: string
+  ): {
+    emit: (record: Omit<LogRecord, "context">) => void;
+  };
+  /** True only for a local Span created by this runtime, not a remote parent. */
+  hasActiveSpan(): boolean;
+  readonly propagation: {
+    /** Capture the current context so delayed iterators can re-enter it. */
+    capture: () => Context;
+    /** Extract a valid Developer parent from the fixed internal header. */
+    extract: (headers: Headers) => Context | undefined;
+    /** Inject the current or explicitly captured Developer context. */
+    inject: (headers: Headers, captured?: Context) => void;
+    /** Run a callback in this runtime's isolated async context. */
+    run: <T>(captured: Context, fn: () => T) => T;
+  };
+  shutdown(): Promise<void>;
+  withSpan<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
+  withSpan<T>(
     name: string,
     attributes: Attributes,
     fn: () => Promise<T> | T
   ): Promise<T>;
 }
-
-export interface OptionOtelHandle {
-  createLogger: (name: string, version?: string) => OptionOtelLogger;
-  /** True only for a local Span created by this runtime, not a remote parent. */
-  hasActiveSpan: () => boolean;
-  readonly propagation: OptionOtelPropagation;
-  shutdown: () => Promise<void>;
-  withSpan: OptionOtelWithSpan;
-}
-
-export interface OptionOtelRuntimeProcessors {
-  readonly logRecordProcessors?: readonly LogRecordProcessor[];
-  readonly spanProcessors?: readonly SpanProcessor[];
-}
-
-const headerCarrierSetter = {
-  set(carrier: Record<string, string>, key: string, value: string): void {
-    carrier[key] = value;
-  },
-};
-
-const headerCarrierGetter = {
-  get(
-    carrier: Readonly<Record<string, string>>,
-    key: string
-  ): string | undefined {
-    return carrier[key];
-  },
-  keys(carrier: Readonly<Record<string, string>>): string[] {
-    return Object.keys(carrier);
-  },
-};
 
 const reportDiagnostic = (message: string, error?: unknown): void => {
   try {
@@ -111,50 +85,6 @@ const reportDiagnostic = (message: string, error?: unknown): void => {
   }
 };
 
-const normalizeEndpoint = (endpoint: string): string => {
-  const normalized = endpoint.trim();
-  if (!normalized) {
-    throw new TypeError("setupOptionOtel: endpoint must not be empty");
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    throw new TypeError("setupOptionOtel: endpoint must be a valid URL");
-  }
-  if (!(parsed.protocol === "http:" || parsed.protocol === "https:")) {
-    throw new TypeError("setupOptionOtel: endpoint must use http or https");
-  }
-  return normalized;
-};
-
-const asRecordedException = (error: unknown): Error | string =>
-  error instanceof Error ? error : String(error);
-
-const errorType = (error: unknown): string =>
-  error instanceof Error ? error.constructor.name : typeof error;
-
-const withFailOpenSpanError = (span: Span, error: unknown): void => {
-  try {
-    span.recordException(asRecordedException(error));
-    span.setAttribute("error.type", errorType(error));
-    span.setStatus({ code: SpanStatusCode.ERROR });
-  } catch (telemetryError) {
-    reportDiagnostic("failed to record Span error", telemetryError);
-  }
-};
-
-const endSpan = (span: Span): void => {
-  try {
-    span.end();
-  } catch (error) {
-    reportDiagnostic("failed to end Span", error);
-  }
-};
-
-const runBusinessCallback = <T>(fn: () => Promise<T> | T): Promise<T> =>
-  Promise.resolve().then(fn);
-
 /**
  * Internal constructor exported for deterministic in-memory tests. It is not
  * re-exported from the package entry point.
@@ -162,15 +92,24 @@ const runBusinessCallback = <T>(fn: () => Promise<T> | T): Promise<T> =>
 export const createOptionOtelRuntime = (
   options: SetupOptionOtelOptions,
   resource: Resource,
-  processors?: OptionOtelRuntimeProcessors
+  processors?: {
+    readonly logRecordProcessors?: readonly LogRecordProcessor[];
+    readonly spanProcessors?: readonly SpanProcessor[];
+  }
 ): OptionOtelHandle => {
-  const endpoint = normalizeEndpoint(options.endpoint);
+  const endpoint = options.endpoint.trim();
+  let endpointProtocol: string;
+  try {
+    endpointProtocol = new URL(endpoint).protocol;
+  } catch {
+    throw new TypeError("setupOptionOtel: endpoint must be a valid URL");
+  }
+  if (!(endpointProtocol === "http:" || endpointProtocol === "https:")) {
+    throw new TypeError("setupOptionOtel: endpoint must use http or https");
+  }
   const headers = options.headers ? { ...options.headers } : undefined;
   const traceEndpoint = resolveOtlpEndpoint("traces", endpoint, {});
   const logEndpoint = resolveOtlpEndpoint("logs", endpoint, {});
-  if (!(traceEndpoint && logEndpoint)) {
-    throw new Error("setupOptionOtel: failed to resolve OTLP endpoints");
-  }
 
   const spanProcessors = processors?.spanProcessors
     ? [...processors.spanProcessors]
@@ -203,7 +142,7 @@ export const createOptionOtelRuntime = (
   const tracer = tracerProvider.getTracer(DEVELOPER_INSTRUMENTATION_SCOPE);
   let shutdownPromise: Promise<void> | undefined;
 
-  const propagation: OptionOtelPropagation = {
+  const propagation: OptionOtelHandle["propagation"] = {
     capture: () => contextManager.active(),
     extract: (headersObject) => {
       const value = headersObject.get(DEVELOPER_TRACEPARENT_HEADER);
@@ -214,7 +153,7 @@ export const createOptionOtelRuntime = (
         const extracted = traceContextPropagator.extract(
           ROOT_CONTEXT,
           { [TRACEPARENT_KEY]: value },
-          headerCarrierGetter
+          defaultTextMapGetter
         );
         const spanContext = trace.getSpanContext(extracted);
         if (spanContext && trace.isSpanContextValid(spanContext)) {
@@ -234,7 +173,7 @@ export const createOptionOtelRuntime = (
         traceContextPropagator.inject(
           captured ?? contextManager.active(),
           carrier,
-          headerCarrierSetter
+          defaultTextMapSetter
         );
         const value = carrier[TRACEPARENT_KEY];
         if (value) {
@@ -264,7 +203,7 @@ export const createOptionOtelRuntime = (
       span = tracer.startSpan(name, { attributes }, parent);
     } catch (error) {
       reportDiagnostic("failed to start Span", error);
-      return runBusinessCallback(fn);
+      return Promise.resolve().then(fn);
     }
 
     const active = trace.setSpan(parent, span).setValue(localSpanKey, span);
@@ -272,10 +211,23 @@ export const createOptionOtelRuntime = (
       try {
         return await fn();
       } catch (error) {
-        withFailOpenSpanError(span, error);
+        try {
+          span.recordException(error instanceof Error ? error : String(error));
+          span.setAttribute(
+            "error.type",
+            error instanceof Error ? error.constructor.name : typeof error
+          );
+          span.setStatus({ code: SpanStatusCode.ERROR });
+        } catch (telemetryError) {
+          reportDiagnostic("failed to record Span error", telemetryError);
+        }
         throw error;
       } finally {
-        endSpan(span);
+        try {
+          span.end();
+        } catch (error) {
+          reportDiagnostic("failed to end Span", error);
+        }
       }
     });
   };
