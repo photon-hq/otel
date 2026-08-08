@@ -17,6 +17,7 @@ import {
   sanitizePhone,
   sanitizeUrl,
   setLogLevel,
+  setupOptionOtel,
   setupOtel,
   withSpan,
 } from "@photon-ai/otel";
@@ -86,6 +87,51 @@ not a `MeterProvider`.
 Create meters and instruments after setup. There is intentionally no top-level meter helper because calling one during module initialization could permanently create no-op instruments.
 
 `shutdown()` unpatches fetch instrumentation if setup installed it, shuts down all three providers, and clears the active setup handle.
+
+## `setupOptionOtel(options)`
+
+Creates an isolated, non-global trace and log runtime. The main `setupOtel()`
+must already be active.
+
+```ts
+function setupOptionOtel(options: SetupOptionOtelOptions): OptionOtelHandle;
+
+interface SetupOptionOtelOptions {
+  endpoint: string;
+  headers?: Record<string, string>;
+}
+```
+
+The endpoint is required and is not overridden by the main standard exporter
+environment variables. `/v1/traces` and `/v1/logs` are appended to a base
+endpoint. The runtime reuses the main Resource; it intentionally has no
+`serviceName` option.
+
+```ts
+interface OptionOtelHandle {
+  createLogger(name: string, version?: string): {
+    emit(record: Omit<LogRecord, "context">): void;
+  };
+  hasActiveSpan(): boolean;
+  propagation: {
+    capture(): Context;
+    extract(headers: Headers): Context | undefined;
+    inject(headers: Headers, captured?: Context): void;
+    run<T>(captured: Context, fn: () => T): T;
+  };
+  withSpan<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
+  withSpan<T>(
+    name: string,
+    attributes: Attributes,
+    fn: () => Promise<T> | T,
+  ): Promise<T>;
+  shutdown(): Promise<void>;
+}
+```
+
+The propagation helper uses the fixed internal
+`photon-developer-traceparent` header and never changes the standard
+`traceparent`.
 
 ## `isOtelActive()`
 

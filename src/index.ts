@@ -15,6 +15,11 @@ export {
   setLogLevel,
 } from "./logger";
 export {
+  type OptionOtelHandle,
+  type SetupOptionOtelOptions,
+  setupOptionOtel,
+} from "./option-runtime";
+export {
   type SanitizeUrlOptions,
   sanitizeEmail,
   sanitizeErrorMessage,
