@@ -119,6 +119,11 @@ interface OptionOtelHandle {
     inject(headers: Headers, captured?: Context): void;
     run<T>(captured: Context, fn: () => T): T;
   };
+  withActiveSpan<T>(
+    name: string,
+    options: SpanOptions & { parentContext?: Context },
+    fn: (span: Span) => Promise<T> | T,
+  ): Promise<T>;
   withSpan<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
   withSpan<T>(
     name: string,
@@ -128,6 +133,11 @@ interface OptionOtelHandle {
   shutdown(): Promise<void>;
 }
 ```
+
+`withActiveSpan()` is the instrumentation-level form. It accepts standard
+OpenTelemetry `SpanOptions`, an optional explicit parent Context, and exposes
+the active Span to the callback. A suppressed parent produces no recording
+Span and does not make `hasActiveSpan()` true; the business callback still runs.
 
 The propagation helper uses the fixed internal
 `photon-developer-traceparent` header and never changes the standard
