@@ -211,7 +211,7 @@ describe("option runtime", () => {
 
     await runtime.withSpan("project.generate", () => {
       logger.emit({
-        attributes: { "project.id": "proj_123" },
+        attributes: { "photon.project.id": "pho_prj_123" },
         body: "开始生成项目",
         eventName: "developer.message",
         severityNumber: SeverityNumber.INFO,
