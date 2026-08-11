@@ -212,7 +212,7 @@ describe("option runtime", () => {
     await runtime.withSpan("project.generate", () => {
       logger.emit({
         attributes: { "photon.project.id": "pho_prj_123" },
-        body: "开始生成项目",
+        body: "Starting project generation",
         eventName: "developer.message",
         severityNumber: SeverityNumber.INFO,
         severityText: "INFO",
@@ -220,7 +220,7 @@ describe("option runtime", () => {
     });
 
     const [record] = logExporter.getFinishedLogRecords();
-    expect(record?.body).toBe("开始生成项目");
+    expect(record?.body).toBe("Starting project generation");
     expect(record?.instrumentationScope.name).toBe("@photon-ai/developer-logs");
     expect(record?.spanContext?.traceId).toMatch(TRACE_ID_PATTERN);
     expect(record?.spanContext?.spanId).toMatch(SPAN_ID_PATTERN);
