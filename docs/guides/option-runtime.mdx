@@ -35,12 +35,16 @@ Calling it before `setupOtel()` is a configuration error.
 ```ts
 const logger = option.createLogger("@photon-ai/developer-logs");
 
-await option.withSpan("project.generate", { "project.id": projectId }, async () => {
-  logger.emit({
-    body: "starting project generation",
-    eventName: "developer.message",
-  });
-});
+await option.withSpan(
+  "project.generate",
+  { "photon.project.id": projectId },
+  async () => {
+    logger.emit({
+      body: "starting project generation",
+      eventName: "developer.message",
+    });
+  }
+);
 ```
 
 Success leaves the Span status `UNSET`. If the callback throws, the runtime

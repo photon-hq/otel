@@ -5,8 +5,10 @@ import {
   defaultTextMapGetter,
   defaultTextMapSetter,
   diag,
+  INVALID_SPAN_CONTEXT,
   ROOT_CONTEXT,
   type Span,
+  type SpanOptions,
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
@@ -52,7 +54,7 @@ export interface OptionOtelHandle {
   ): {
     emit: (record: Omit<LogRecord, "context">) => void;
   };
-  /** True only for a local Span created by this runtime, not a remote parent. */
+  /** True only for a recording local Span, not a remote or suppressed parent. */
   hasActiveSpan(): boolean;
   readonly propagation: {
     /** Capture the current context so delayed iterators can re-enter it. */
@@ -65,6 +67,12 @@ export interface OptionOtelHandle {
     run: <T>(captured: Context, fn: () => T) => T;
   };
   shutdown(): Promise<void>;
+  /** Run a callback with a Span active only in this runtime's private Context. */
+  withActiveSpan<T>(
+    name: string,
+    options: SpanOptions & { parentContext?: Context },
+    fn: (span: Span) => Promise<T> | T
+  ): Promise<T>;
   withSpan<T>(name: string, fn: () => Promise<T> | T): Promise<T>;
   withSpan<T>(
     name: string,
@@ -186,30 +194,28 @@ export const createOptionOtelRuntime = (
     run: (captured, fn) => contextManager.with(captured, fn),
   };
 
-  const withSpan = <T>(
-    name: string,
-    attributesOrFn: Attributes | (() => Promise<T> | T),
-    maybeFn?: () => Promise<T> | T
-  ): Promise<T> => {
-    const fn = typeof attributesOrFn === "function" ? attributesOrFn : maybeFn;
-    if (!fn) {
-      throw new Error("withSpan: function argument is required");
-    }
-    const attributes =
-      typeof attributesOrFn === "function" ? undefined : attributesOrFn;
-    const parent = contextManager.active();
+  const withActiveSpan: OptionOtelHandle["withActiveSpan"] = async (
+    name,
+    options,
+    fn
+  ) => {
+    const { parentContext, ...spanOptions } = options;
+    const parent = parentContext ?? contextManager.active();
     let span: Span;
     try {
-      span = tracer.startSpan(name, { attributes }, parent);
+      span = tracer.startSpan(name, spanOptions, parent);
     } catch (error) {
       reportDiagnostic("failed to start Span", error);
-      return Promise.resolve().then(fn);
+      return await fn(trace.wrapSpanContext(INVALID_SPAN_CONTEXT));
     }
 
-    const active = trace.setSpan(parent, span).setValue(localSpanKey, span);
-    return contextManager.with(active, async () => {
+    const spanContext = trace.setSpan(parent, span);
+    const active = span.isRecording()
+      ? spanContext.setValue(localSpanKey, span)
+      : spanContext;
+    return await contextManager.with(active, async () => {
       try {
-        return await fn();
+        return await fn(span);
       } catch (error) {
         try {
           span.recordException(error instanceof Error ? error : String(error));
@@ -230,6 +236,20 @@ export const createOptionOtelRuntime = (
         }
       }
     });
+  };
+
+  const withSpan = <T>(
+    name: string,
+    attributesOrFn: Attributes | (() => Promise<T> | T),
+    maybeFn?: () => Promise<T> | T
+  ): Promise<T> => {
+    const fn = typeof attributesOrFn === "function" ? attributesOrFn : maybeFn;
+    if (!fn) {
+      throw new Error("withSpan: function argument is required");
+    }
+    const attributes =
+      typeof attributesOrFn === "function" ? undefined : attributesOrFn;
+    return withActiveSpan(name, { attributes }, () => fn());
   };
 
   return {
@@ -260,6 +280,7 @@ export const createOptionOtelRuntime = (
       }
       return shutdownPromise;
     },
+    withActiveSpan,
     withSpan: withSpan as OptionOtelHandle["withSpan"],
   };
 };
