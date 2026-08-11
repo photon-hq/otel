@@ -1,5 +1,11 @@
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  ROOT_CONTEXT,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 import { SeverityNumber } from "@opentelemetry/api-logs";
+import { suppressTracing } from "@opentelemetry/core";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   InMemoryLogRecordExporter,
@@ -155,13 +161,57 @@ describe("option runtime", () => {
     await runtime.shutdown();
   });
 
+  it("supports a private active SERVER root with full Span options", async () => {
+    const { runtime, spanExporter } = createRuntime();
+    let callbackSpanId = "";
+
+    await runtime.withActiveSpan(
+      "developer.http",
+      {
+        attributes: { "photon.api_key.id": "pho_sk_test" },
+        kind: SpanKind.SERVER,
+        parentContext: ROOT_CONTEXT,
+      },
+      (span) => {
+        callbackSpanId = span.spanContext().spanId;
+        expect(runtime.hasActiveSpan()).toBe(true);
+      }
+    );
+
+    const [server] = spanExporter.getFinishedSpans();
+    expect(server?.kind).toBe(SpanKind.SERVER);
+    expect(server?.parentSpanContext).toBeUndefined();
+    expect(server?.attributes["photon.api_key.id"]).toBe("pho_sk_test");
+    expect(callbackSpanId).toBe(server?.spanContext().spanId);
+    await runtime.shutdown();
+  });
+
+  it("does not activate or export spans when tracing is suppressed", async () => {
+    const { runtime, spanExporter } = createRuntime();
+    let callbackRan = false;
+    const headers = new Headers();
+
+    await runtime.propagation.run(suppressTracing(ROOT_CONTEXT), () =>
+      runtime.withSpan("suppressed", () => {
+        callbackRan = true;
+        expect(runtime.hasActiveSpan()).toBe(false);
+        runtime.propagation.inject(headers);
+      })
+    );
+
+    expect(callbackRan).toBe(true);
+    expect(headers.has(TRACEPARENT_HEADER)).toBe(false);
+    expect(spanExporter.getFinishedSpans()).toEqual([]);
+    await runtime.shutdown();
+  });
+
   it("associates logs with the active local span and inherited Resource", async () => {
     const { logExporter, runtime } = createRuntime("projects-service");
     const logger = runtime.createLogger("@photon-ai/developer-logs");
 
     await runtime.withSpan("project.generate", () => {
       logger.emit({
-        attributes: { "project.id": "proj_123" },
+        attributes: { "photon.project.id": "pho_prj_123" },
         body: "开始生成项目",
         eventName: "developer.message",
         severityNumber: SeverityNumber.INFO,
