@@ -107,7 +107,8 @@ interface SetupOptionOtelOptions {
 The endpoint is required and is not overridden by the main standard exporter
 environment variables. `/v1/traces` and `/v1/logs` are appended to a base
 endpoint. The runtime creates its own Resource from `resourceAttributes`; an
-omitted value produces an empty Resource.
+omitted value produces an empty Resource. `traceparentHeader` must be a private
+carrier name and cannot be the standard `traceparent` header.
 
 ```ts
 interface OptionOtelHandle {

@@ -118,6 +118,8 @@ describe("setupOptionOtel", () => {
   it.each([
     "",
     "bad header\nname",
+    "traceparent",
+    "TraceParent",
   ])("rejects invalid traceparent header %j", (traceparentHeader) => {
     expect(() =>
       setupOptionOtel({ endpoint: ENDPOINT, traceparentHeader })

@@ -47,7 +47,7 @@ export interface SetupOptionOtelOptions {
   headers?: Record<string, string>;
   /** Attributes for this runtime's independent OpenTelemetry Resource. */
   resourceAttributes?: Attributes;
-  /** Carrier header used to propagate this runtime's private trace context. */
+  /** Private carrier header; the standard `traceparent` name is rejected. */
   traceparentHeader: string;
 }
 
@@ -128,6 +128,11 @@ export const createOptionOtelRuntime = (
   } catch {
     throw new TypeError(
       "setupOptionOtel: traceparentHeader must be a valid HTTP header name"
+    );
+  }
+  if (traceparentHeader.toLowerCase() === TRACEPARENT_KEY) {
+    throw new TypeError(
+      "setupOptionOtel: traceparentHeader must not be traceparent"
     );
   }
   const headers = options.headers ? { ...options.headers } : undefined;
