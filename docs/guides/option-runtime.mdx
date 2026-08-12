@@ -11,8 +11,8 @@ import { setupOptionOtel } from "@photon-ai/otel";
 
 const option = setupOptionOtel({
   endpoint: "https://audit-collector.example.com",
-  resourceAttributes: { "service.version": "1.2.3" },
   traceparentHeader: "x-audit-traceparent",
+  resourceAttributes: { "service.version": "1.2.3" },
 });
 ```
 

@@ -37,18 +37,19 @@ const OPTION_INSTRUMENTATION_SCOPE = "@photon-ai/otel.option-runtime";
 const TRACEPARENT_KEY = "traceparent";
 const DIAGNOSTIC_SCOPE = "@photon-ai/otel.option-runtime";
 
+// biome-ignore assist/source/useSortedInterfaceMembers: required options precede optional configuration.
 export interface SetupOptionOtelOptions {
   /**
    * OTLP/HTTP base endpoint. `/v1/traces` and `/v1/logs` are appended by the
    * runtime. Standard main OTel environment variables do not override it.
    */
   endpoint: string;
+  /** Private carrier header; the standard `traceparent` name is rejected. */
+  traceparentHeader: string;
   /** Optional OTLP transport headers, typically used for Collector auth. */
   headers?: Record<string, string>;
   /** Attributes for this runtime's independent OpenTelemetry Resource. */
   resourceAttributes?: Attributes;
-  /** Private carrier header; the standard `traceparent` name is rejected. */
-  traceparentHeader: string;
 }
 
 export interface OptionOtelHandle {

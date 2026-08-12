@@ -98,9 +98,9 @@ function setupOptionOtel(options: SetupOptionOtelOptions): OptionOtelHandle;
 
 interface SetupOptionOtelOptions {
   endpoint: string;
+  traceparentHeader: string;
   headers?: Record<string, string>;
   resourceAttributes?: Attributes;
-  traceparentHeader: string;
 }
 ```
 

@@ -17,7 +17,7 @@ import {
   SimpleSpanProcessor,
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createOptionOtelRuntime,
   setupOptionOtel,
@@ -32,6 +32,33 @@ const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const TRACEPARENT_PATTERN = /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/u;
 const MAIN_TRACEPARENT =
   "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+interface PublicExportedSpan {
+  readonly resource: {
+    readonly attributes: Readonly<Record<string, unknown>>;
+  };
+}
+
+const publicExportedSpans = vi.hoisted(() => [] as PublicExportedSpan[]);
+
+vi.mock("@opentelemetry/exporter-trace-otlp-http", async () => {
+  const { ExportResultCode } = await import("@opentelemetry/core");
+  return {
+    OTLPTraceExporter: class {
+      export(
+        spans: readonly PublicExportedSpan[],
+        resultCallback: (result: { code: number }) => void
+      ): void {
+        publicExportedSpans.push(...spans);
+        resultCallback({ code: ExportResultCode.SUCCESS });
+      }
+
+      shutdown(): Promise<void> {
+        return Promise.resolve();
+      }
+    },
+  };
+});
 
 const traceparentParts = (headers: Headers): readonly string[] => {
   const value = headers.get(TRACEPARENT_HEADER);
@@ -54,6 +81,10 @@ const createRuntime = (serviceName = "projects-service") => {
   );
   return { logExporter, runtime, spanExporter };
 };
+
+beforeEach(() => {
+  publicExportedSpans.length = 0;
+});
 
 afterEach(async () => {
   if (isOtelActive()) {
@@ -126,17 +157,31 @@ describe("setupOptionOtel", () => {
     ).toThrowError(TypeError);
   });
 
-  it("uses an independent Resource", async () => {
+  it("exports only the Resource supplied to the independent runtime", async () => {
+    setupOtel({
+      resourceAttributes: { "main.runtime": true },
+      serviceName: "main-service",
+    });
     const option = setupOptionOtel({
       endpoint: ENDPOINT,
+      traceparentHeader: TRACEPARENT_HEADER,
       resourceAttributes: {
         "service.name": "option-service",
         "service.version": "1.2.3",
       },
-      traceparentHeader: TRACEPARENT_HEADER,
     });
-    expect(isOtelActive()).toBe(false);
+
+    await option.withSpan("resource-check", () => undefined);
     await option.shutdown();
+
+    expect(publicExportedSpans).toHaveLength(1);
+    expect(publicExportedSpans[0]?.resource.attributes).toMatchObject({
+      "service.name": "option-service",
+      "service.version": "1.2.3",
+    });
+    expect(
+      publicExportedSpans[0]?.resource.attributes["main.runtime"]
+    ).toBeUndefined();
   });
 });
 
