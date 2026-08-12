@@ -26,6 +26,7 @@ import { isOtelActive, setupOtel } from "../src/setup";
 import { withSpan as withMainSpan } from "../src/with-span";
 
 const ENDPOINT = "http://collector.internal:4318";
+const API_KEY_ID = "pho_sk_01h455vb4pex5vsknk084sn02s";
 const TRACEPARENT_HEADER = "photon-developer-traceparent";
 const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/u;
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -168,7 +169,7 @@ describe("option runtime", () => {
     await runtime.withActiveSpan(
       "developer.http",
       {
-        attributes: { "photon.api_key.id": "pho_sk_test" },
+        attributes: { "photon.api_key.id": API_KEY_ID },
         kind: SpanKind.SERVER,
         parentContext: ROOT_CONTEXT,
       },
@@ -181,7 +182,7 @@ describe("option runtime", () => {
     const [server] = spanExporter.getFinishedSpans();
     expect(server?.kind).toBe(SpanKind.SERVER);
     expect(server?.parentSpanContext).toBeUndefined();
-    expect(server?.attributes["photon.api_key.id"]).toBe("pho_sk_test");
+    expect(server?.attributes["photon.api_key.id"]).toBe(API_KEY_ID);
     expect(callbackSpanId).toBe(server?.spanContext().spanId);
     await runtime.shutdown();
   });
