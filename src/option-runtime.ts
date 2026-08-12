@@ -119,7 +119,7 @@ export const createOptionOtelRuntime = (
   if (!(endpointProtocol === "http:" || endpointProtocol === "https:")) {
     throw new TypeError("setupOptionOtel: endpoint must use http or https");
   }
-  const traceparentHeader = options.traceparentHeader.trim();
+  const traceparentHeader = options.traceparentHeader;
   try {
     if (!traceparentHeader) {
       throw new TypeError("traceparentHeader is empty");
