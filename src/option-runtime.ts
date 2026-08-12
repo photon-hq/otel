@@ -17,7 +17,10 @@ import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-ho
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import type { Resource } from "@opentelemetry/resources";
+import {
+  type Resource,
+  resourceFromAttributes,
+} from "@opentelemetry/resources";
 import {
   BatchLogRecordProcessor,
   LoggerProvider,
@@ -29,22 +32,23 @@ import {
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { resolveOtlpEndpoint } from "./otlp-config";
-import { activeOtelResource } from "./setup";
 
-const DEVELOPER_TRACEPARENT_HEADER = "photon-developer-traceparent";
-const DEVELOPER_INSTRUMENTATION_SCOPE = "@photon-ai/developer-logs";
+const OPTION_INSTRUMENTATION_SCOPE = "@photon-ai/otel.option-runtime";
 const TRACEPARENT_KEY = "traceparent";
 const DIAGNOSTIC_SCOPE = "@photon-ai/otel.option-runtime";
 
 export interface SetupOptionOtelOptions {
   /**
-   * Developer OTLP/HTTP base endpoint. `/v1/traces` and `/v1/logs` are
-   * appended by the runtime. Standard main OTel environment variables do not
-   * override this value.
+   * OTLP/HTTP base endpoint. `/v1/traces` and `/v1/logs` are appended by the
+   * runtime. Standard main OTel environment variables do not override it.
    */
   endpoint: string;
   /** Optional OTLP transport headers, typically used for Collector auth. */
   headers?: Record<string, string>;
+  /** Attributes for this runtime's independent OpenTelemetry Resource. */
+  resourceAttributes?: Attributes;
+  /** Carrier header used to propagate this runtime's private trace context. */
+  traceparentHeader: string;
 }
 
 export interface OptionOtelHandle {
@@ -59,9 +63,9 @@ export interface OptionOtelHandle {
   readonly propagation: {
     /** Capture the current context so delayed iterators can re-enter it. */
     capture: () => Context;
-    /** Extract a valid Developer parent from the fixed internal header. */
+    /** Extract a valid parent from this runtime's configured carrier header. */
     extract: (headers: Headers) => Context | undefined;
-    /** Inject the current or explicitly captured Developer context. */
+    /** Inject the current or explicitly captured private context. */
     inject: (headers: Headers, captured?: Context) => void;
     /** Run a callback in this runtime's isolated async context. */
     run: <T>(captured: Context, fn: () => T) => T;
@@ -115,6 +119,17 @@ export const createOptionOtelRuntime = (
   if (!(endpointProtocol === "http:" || endpointProtocol === "https:")) {
     throw new TypeError("setupOptionOtel: endpoint must use http or https");
   }
+  const traceparentHeader = options.traceparentHeader.trim();
+  try {
+    if (!traceparentHeader) {
+      throw new TypeError("traceparentHeader is empty");
+    }
+    new Headers().set(traceparentHeader, "validate");
+  } catch {
+    throw new TypeError(
+      "setupOptionOtel: traceparentHeader must be a valid HTTP header name"
+    );
+  }
   const headers = options.headers ? { ...options.headers } : undefined;
   const traceEndpoint = resolveOtlpEndpoint("traces", endpoint, {});
   const logEndpoint = resolveOtlpEndpoint("logs", endpoint, {});
@@ -147,13 +162,13 @@ export const createOptionOtelRuntime = (
     "@photon-ai/otel.option-runtime.local-span"
   );
   const traceContextPropagator = new W3CTraceContextPropagator();
-  const tracer = tracerProvider.getTracer(DEVELOPER_INSTRUMENTATION_SCOPE);
+  const tracer = tracerProvider.getTracer(OPTION_INSTRUMENTATION_SCOPE);
   let shutdownPromise: Promise<void> | undefined;
 
   const propagation: OptionOtelHandle["propagation"] = {
     capture: () => contextManager.active(),
     extract: (headersObject) => {
-      const value = headersObject.get(DEVELOPER_TRACEPARENT_HEADER);
+      const value = headersObject.get(traceparentHeader);
       if (!value) {
         return;
       }
@@ -167,16 +182,16 @@ export const createOptionOtelRuntime = (
         if (spanContext && trace.isSpanContextValid(spanContext)) {
           return extracted;
         }
-        reportDiagnostic("ignored invalid Developer trace header");
+        reportDiagnostic("ignored invalid option trace header");
         return;
       } catch (error) {
-        reportDiagnostic("ignored invalid Developer trace header", error);
+        reportDiagnostic("ignored invalid option trace header", error);
         return;
       }
     },
     inject: (headersObject, captured) => {
       try {
-        headersObject.delete(DEVELOPER_TRACEPARENT_HEADER);
+        headersObject.delete(traceparentHeader);
         const carrier: Record<string, string> = {};
         traceContextPropagator.inject(
           captured ?? contextManager.active(),
@@ -185,10 +200,10 @@ export const createOptionOtelRuntime = (
         );
         const value = carrier[TRACEPARENT_KEY];
         if (value) {
-          headersObject.set(DEVELOPER_TRACEPARENT_HEADER, value);
+          headersObject.set(traceparentHeader, value);
         }
       } catch (error) {
-        reportDiagnostic("failed to inject Developer trace header", error);
+        reportDiagnostic("failed to inject option trace header", error);
       }
     },
     run: (captured, fn) => contextManager.with(captured, fn),
@@ -285,15 +300,11 @@ export const createOptionOtelRuntime = (
   };
 };
 
-/** Create an isolated, non-global OTel Runtime using the main Resource. */
+/** Create an isolated, non-global OTel runtime with its own Resource. */
 export const setupOptionOtel = (
   options: SetupOptionOtelOptions
-): OptionOtelHandle => {
-  const resource = activeOtelResource();
-  if (!resource) {
-    throw new Error(
-      "setupOptionOtel: setupOtel() must complete before creating an option runtime"
-    );
-  }
-  return createOptionOtelRuntime(options, resource);
-};
+): OptionOtelHandle =>
+  createOptionOtelRuntime(
+    options,
+    resourceFromAttributes(options.resourceAttributes ?? {})
+  );

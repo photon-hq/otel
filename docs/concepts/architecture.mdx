@@ -57,11 +57,10 @@ The returned handle's `getMeter()` method calls its configured meter provider
 directly. This keeps metrics scoped to that setup when `register: false`;
 application code does not need to know which registration mode is active.
 
-`setupOptionOtel()` is a stricter instance path for a second explicit trace and
-log stream. It uses its own providers and `AsyncLocalStorage` context and never
-registers them globally. Only the already-resolved Resource is shared with the
-main runtime, so the two pipelines describe the same process without sharing
-active spans or exporters.
+`setupOptionOtel()` is an instance path for a second explicit trace and log
+stream. It uses its own Resource, providers, and `AsyncLocalStorage` context
+and never registers them globally. The two pipelines share no active spans,
+exporters, or Resource metadata.
 
 ## Why setup is idempotent
 

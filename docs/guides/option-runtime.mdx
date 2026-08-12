@@ -3,20 +3,16 @@ title: "Isolated option runtime"
 description: "Run a second explicit trace and log pipeline without replacing the main OpenTelemetry runtime."
 ---
 
-`setupOptionOtel()` creates an instance-level trace and log runtime after the
-main `setupOtel()` has initialized the process:
+`setupOptionOtel()` creates an independent instance-level trace and log
+runtime:
 
 ```ts
-import { setupOptionOtel, setupOtel } from "@photon-ai/otel";
-
-const main = setupOtel({
-  endpoint: "https://observability.example.com",
-  serviceName: "projects-service",
-});
+import { setupOptionOtel } from "@photon-ai/otel";
 
 const option = setupOptionOtel({
-  endpoint: "https://developer-collector.example.com",
-  headers: { Authorization: "Bearer token" },
+  endpoint: "https://audit-collector.example.com",
+  resourceAttributes: { "service.version": "1.2.3" },
+  traceparentHeader: "x-audit-traceparent",
 });
 ```
 
@@ -25,23 +21,22 @@ processors, exporters, and async context. It does not register any global
 provider or context manager, patch fetch, configure metrics, or change the
 main runtime.
 
-It reuses the Resource already resolved by `setupOtel()`. This keeps
-`service.name`, `service.version`, deployment metadata, and application
-Resource attributes consistent while avoiding a second service-name option.
-Calling it before `setupOtel()` is a configuration error.
+It creates a separate Resource from the explicitly supplied
+`resourceAttributes`. It neither copies metadata from the main runtime nor
+requires the main runtime to exist.
 
 ## Explicit spans and logs
 
 ```ts
-const logger = option.createLogger("@photon-ai/developer-logs");
+const logger = option.createLogger("example.audit");
 
 await option.withSpan(
-  "project.generate",
-  { "photon.project.id": projectId },
+  "report.generate",
+  { "app.entity.id": entityId },
   async () => {
     logger.emit({
-      body: "starting project generation",
-      eventName: "developer.message",
+      body: "starting report generation",
+      eventName: "audit.message",
     });
   }
 );
@@ -58,18 +53,15 @@ should normally wrap it and define its own message/severity contract.
 
 The handle exposes `capture()`, `inject()`, `extract()`, and `run()` through
 `option.propagation`. They operate only on the option runtime's async context
-and use the fixed `photon-developer-traceparent` carrier header. The header
-value uses W3C Trace Context encoding; the standard main `traceparent` remains
-untouched.
+and use the configured `traceparentHeader`. Its value uses W3C Trace Context
+encoding; the standard main `traceparent` remains untouched.
 
 ## Shutdown
 
-Shut down instance runtimes before the main runtime:
+Shut down the instance runtime during application shutdown:
 
 ```ts
 await option.shutdown();
-await main.shutdown();
 ```
 
-Option shutdown disables only its async context and providers. The main
-runtime remains active.
+Option shutdown disables only its async context and providers.

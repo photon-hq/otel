@@ -19,10 +19,7 @@ import {
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import {
-  type Resource,
-  resourceFromAttributes,
-} from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   BatchLogRecordProcessor,
   LoggerProvider as SdkLoggerProvider,
@@ -122,7 +119,6 @@ export interface OtelHandle {
 }
 
 let activeHandle: OtelHandle | undefined;
-let activeResource: Resource | undefined;
 
 const TRAILING_SLASH = /\/$/;
 
@@ -367,19 +363,12 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
       if (activeHandle === handle) {
         clearActiveProviders();
         activeHandle = undefined;
-        activeResource = undefined;
       }
     },
   };
 
-  activeResource = resource;
   activeHandle = handle;
   return handle;
-}
-
-/** Internal bridge used by the instance-level runtime factory. */
-export function activeOtelResource(): Resource | undefined {
-  return activeResource;
 }
 
 /**

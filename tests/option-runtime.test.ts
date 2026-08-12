@@ -26,7 +26,7 @@ import { isOtelActive, setupOtel } from "../src/setup";
 import { withSpan as withMainSpan } from "../src/with-span";
 
 const ENDPOINT = "http://collector.internal:4318";
-const TRACEPARENT_HEADER = "photon-developer-traceparent";
+const TRACEPARENT_HEADER = "x-test-option-traceparent";
 const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/u;
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const TRACEPARENT_PATTERN = /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/u;
@@ -36,7 +36,7 @@ const MAIN_TRACEPARENT =
 const traceparentParts = (headers: Headers): readonly string[] => {
   const value = headers.get(TRACEPARENT_HEADER);
   if (!value) {
-    throw new Error("expected Developer trace header");
+    throw new Error("expected option trace header");
   }
   return value.split("-");
 };
@@ -45,7 +45,7 @@ const createRuntime = (serviceName = "projects-service") => {
   const spanExporter = new InMemorySpanExporter();
   const logExporter = new InMemoryLogRecordExporter();
   const runtime = createOptionOtelRuntime(
-    { endpoint: ENDPOINT },
+    { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
     resourceFromAttributes({ "service.name": serviceName }),
     {
       logRecordProcessors: [new SimpleLogRecordProcessor(logExporter)],
@@ -62,16 +62,21 @@ afterEach(async () => {
 });
 
 describe("setupOptionOtel", () => {
-  it("requires the main setup without leaving active state", () => {
-    expect(() => setupOptionOtel({ endpoint: ENDPOINT })).toThrowError(
-      "setupOtel() must complete"
-    );
+  it("starts independently without activating the main runtime", async () => {
+    const option = setupOptionOtel({
+      endpoint: ENDPOINT,
+      traceparentHeader: TRACEPARENT_HEADER,
+    });
     expect(isOtelActive()).toBe(false);
+    await option.shutdown();
   });
 
   it("does not replace or shut down the main runtime", async () => {
     const main = setupOtel({ serviceName: "main-service" });
-    const option = setupOptionOtel({ endpoint: ENDPOINT });
+    const option = setupOptionOtel({
+      endpoint: ENDPOINT,
+      traceparentHeader: TRACEPARENT_HEADER,
+    });
 
     expect(isOtelActive()).toBe(true);
     await option.shutdown();
@@ -81,23 +86,23 @@ describe("setupOptionOtel", () => {
 
   it("keeps the main and option active spans independent", async () => {
     setupOtel({ serviceName: "main-service" });
-    const developer = createRuntime();
+    const option = createRuntime();
 
     await withMainSpan("main", async () => {
       const mainSpanId = trace.getActiveSpan()?.spanContext().spanId;
       expect(mainSpanId).toMatch(SPAN_ID_PATTERN);
 
-      await developer.runtime.withSpan("developer", () => {
+      await option.runtime.withSpan("option", () => {
         expect(trace.getActiveSpan()?.spanContext().spanId).toBe(mainSpanId);
         const headers = new Headers();
-        developer.runtime.propagation.inject(headers);
+        option.runtime.propagation.inject(headers);
         expect(traceparentParts(headers)[2]).not.toBe(mainSpanId);
       });
 
       expect(trace.getActiveSpan()?.spanContext().spanId).toBe(mainSpanId);
     });
 
-    await developer.runtime.shutdown();
+    await option.runtime.shutdown();
   });
 
   it.each([
@@ -105,13 +110,36 @@ describe("setupOptionOtel", () => {
     "not-a-url",
     "ftp://collector.internal",
   ])("rejects invalid endpoint %j", (endpoint) => {
-    setupOtel({ serviceName: "main-service" });
-    expect(() => setupOptionOtel({ endpoint })).toThrowError(TypeError);
+    expect(() =>
+      setupOptionOtel({ endpoint, traceparentHeader: TRACEPARENT_HEADER })
+    ).toThrowError(TypeError);
+  });
+
+  it.each([
+    "",
+    "bad header\nname",
+  ])("rejects invalid traceparent header %j", (traceparentHeader) => {
+    expect(() =>
+      setupOptionOtel({ endpoint: ENDPOINT, traceparentHeader })
+    ).toThrowError(TypeError);
+  });
+
+  it("uses an independent Resource", async () => {
+    const option = setupOptionOtel({
+      endpoint: ENDPOINT,
+      resourceAttributes: {
+        "service.name": "option-service",
+        "service.version": "1.2.3",
+      },
+      traceparentHeader: TRACEPARENT_HEADER,
+    });
+    expect(isOtelActive()).toBe(false);
+    await option.shutdown();
   });
 });
 
 describe("option runtime", () => {
-  it("keeps nested spans in one isolated Developer trace across await", async () => {
+  it("keeps nested spans in one isolated trace across await", async () => {
     const { runtime, spanExporter } = createRuntime();
     const observedHeaders: string[][] = [];
 
@@ -142,7 +170,7 @@ describe("option runtime", () => {
     await runtime.shutdown();
   });
 
-  it("keeps concurrent requests in separate Developer traces", async () => {
+  it("keeps concurrent requests in separate traces", async () => {
     const { runtime } = createRuntime();
     const traceIds = await Promise.all(
       [1, 2].map((value) =>
@@ -166,7 +194,7 @@ describe("option runtime", () => {
     let callbackSpanId = "";
 
     await runtime.withActiveSpan(
-      "developer.http",
+      "option.http",
       {
         attributes: { "photon.api_key.id": "pho_sk_test" },
         kind: SpanKind.SERVER,
@@ -207,21 +235,21 @@ describe("option runtime", () => {
 
   it("associates logs with the active local span and inherited Resource", async () => {
     const { logExporter, runtime } = createRuntime("projects-service");
-    const logger = runtime.createLogger("@photon-ai/developer-logs");
+    const logger = runtime.createLogger("test.option-logger");
 
-    await runtime.withSpan("project.generate", () => {
+    await runtime.withSpan("report.generate", () => {
       logger.emit({
-        attributes: { "photon.project.id": "pho_prj_123" },
-        body: "Starting project generation",
-        eventName: "developer.message",
+        attributes: { "app.entity.id": "entity-123" },
+        body: "Starting report generation",
+        eventName: "test.message",
         severityNumber: SeverityNumber.INFO,
         severityText: "INFO",
       });
     });
 
     const [record] = logExporter.getFinishedLogRecords();
-    expect(record?.body).toBe("Starting project generation");
-    expect(record?.instrumentationScope.name).toBe("@photon-ai/developer-logs");
+    expect(record?.body).toBe("Starting report generation");
+    expect(record?.instrumentationScope.name).toBe("test.option-logger");
     expect(record?.spanContext?.traceId).toMatch(TRACE_ID_PATTERN);
     expect(record?.spanContext?.spanId).toMatch(SPAN_ID_PATTERN);
     expect(record?.resource.attributes["service.name"]).toBe(
@@ -254,7 +282,7 @@ describe("option runtime", () => {
       true
     );
     expect(failure?.instrumentationScope.name).toBe(
-      "@photon-ai/developer-logs"
+      "@photon-ai/otel.option-runtime"
     );
     await runtime.shutdown();
   });
@@ -276,14 +304,14 @@ describe("option runtime", () => {
       shutdown: () => Promise.resolve(),
     } satisfies SpanProcessor;
     const runtime = createOptionOtelRuntime(
-      { endpoint: ENDPOINT },
+      { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
       resourceFromAttributes({ "service.name": "projects-service" }),
       {
         logRecordProcessors: [failingLogProcessor],
         spanProcessors: [failingSpanProcessor],
       }
     );
-    const logger = runtime.createLogger("@photon-ai/developer-logs");
+    const logger = runtime.createLogger("test.option-logger");
     const result = { ok: true };
 
     await expect(
@@ -304,7 +332,7 @@ describe("option runtime", () => {
       shutdown: () => Promise.reject(shutdownError),
     } satisfies SpanProcessor;
     const runtime = createOptionOtelRuntime(
-      { endpoint: ENDPOINT },
+      { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
       resourceFromAttributes({ "service.name": "projects-service" }),
       { spanProcessors: [failingSpanProcessor] }
     );
@@ -324,7 +352,7 @@ describe("option runtime", () => {
       upstreamSpanId = parts[2] ?? "";
       const extracted = downstream.runtime.propagation.extract(requestHeaders);
       if (!extracted) {
-        throw new Error("expected extracted Developer context");
+        throw new Error("expected extracted option context");
       }
       expect(downstream.runtime.hasActiveSpan()).toBe(false);
       await downstream.runtime.propagation.run(extracted, async () => {
@@ -356,7 +384,7 @@ describe("option runtime", () => {
       upstreamSpanId = traceparentParts(middleHeaders)[2] ?? "";
       const middleContext = middle.runtime.propagation.extract(middleHeaders);
       if (!middleContext) {
-        throw new Error("expected middle Developer context");
+        throw new Error("expected middle option context");
       }
 
       await middle.runtime.propagation.run(middleContext, async () => {
@@ -366,7 +394,7 @@ describe("option runtime", () => {
         const downstreamContext =
           downstream.runtime.propagation.extract(downstreamHeaders);
         if (!downstreamContext) {
-          throw new Error("expected downstream Developer context");
+          throw new Error("expected downstream option context");
         }
         await downstream.runtime.propagation.run(downstreamContext, () =>
           downstream.runtime.withSpan("service-c", () => undefined)

@@ -90,8 +90,8 @@ Create meters and instruments after setup. There is intentionally no top-level m
 
 ## `setupOptionOtel(options)`
 
-Creates an isolated, non-global trace and log runtime. The main `setupOtel()`
-must already be active.
+Creates an isolated, non-global trace and log runtime. It does not depend on
+the main `setupOtel()` runtime.
 
 ```ts
 function setupOptionOtel(options: SetupOptionOtelOptions): OptionOtelHandle;
@@ -99,13 +99,15 @@ function setupOptionOtel(options: SetupOptionOtelOptions): OptionOtelHandle;
 interface SetupOptionOtelOptions {
   endpoint: string;
   headers?: Record<string, string>;
+  resourceAttributes?: Attributes;
+  traceparentHeader: string;
 }
 ```
 
 The endpoint is required and is not overridden by the main standard exporter
 environment variables. `/v1/traces` and `/v1/logs` are appended to a base
-endpoint. The runtime reuses the main Resource; it intentionally has no
-`serviceName` option.
+endpoint. The runtime creates its own Resource from `resourceAttributes`; an
+omitted value produces an empty Resource.
 
 ```ts
 interface OptionOtelHandle {
@@ -139,9 +141,8 @@ OpenTelemetry `SpanOptions`, an optional explicit parent Context, and exposes
 the active Span to the callback. A suppressed parent produces no recording
 Span and does not make `hasActiveSpan()` true; the business callback still runs.
 
-The propagation helper uses the fixed internal
-`photon-developer-traceparent` header and never changes the standard
-`traceparent`.
+The propagation helper uses the configured `traceparentHeader` and never
+changes the standard `traceparent`.
 
 ## `isOtelActive()`
 
