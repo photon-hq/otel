@@ -11,7 +11,8 @@ It does not invent a telemetry model. It chooses a small set of defaults that ma
 
 The package exports one entry point with these groups:
 
-- setup: `setupOtel()`, `setupOptionOtel()`, `isOtelActive()`, and the returned handles
+- setup: `setupOtel()`, `isOtelActive()`, and the returned handle
+- isolated runtime: `createIsolatedOtel()` and its handle
 - logging: `createLogger()`, `setLogLevel()`, `getLogLevel()`
 - tracing helper: `withSpan()`
 - fetch instrumentation: `instrumentFetch()`
@@ -57,9 +58,10 @@ The returned handle's `getMeter()` method calls its configured meter provider
 directly. This keeps metrics scoped to that setup when `register: false`;
 application code does not need to know which registration mode is active.
 
-`setupOptionOtel()` is an instance path for a second explicit trace and log
+`createIsolatedOtel()` is an instance path for a second explicit trace and log
 stream. It uses its own Resource, providers, and `AsyncLocalStorage` context
-and never registers them globally. The two pipelines share no active spans,
+and never registers them globally. It is a plain factory, not a singleton:
+each call builds a new runtime. The two pipelines share no active spans,
 exporters, or Resource metadata.
 
 ## Why setup is idempotent

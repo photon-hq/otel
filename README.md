@@ -5,7 +5,7 @@ A DX-focused OpenTelemetry wrapper for **Bun** and **Node.js**.
 Vanilla OTel works, but the setup is verbose, the logger plumbing is awkward, and PII scrubbing is on you. `@photon-ai/otel` wraps the OTLP/HTTP stack into a few well-named functions:
 
 - **`setupOtel()`** — idempotent one-call bootstrap for traces + logs + metrics. Honors standard `OTEL_EXPORTER_OTLP_*` env vars.
-- **`setupOptionOtel()`** — creates an isolated trace + log runtime with its own Resource and configurable propagation header, without replacing global providers or context.
+- **`createIsolatedOtel()`** — creates an isolated trace + log runtime with its own Resource and configurable propagation header, without replacing global providers or context.
 - **`otel.getMeter(name)`** — creates standard OpenTelemetry instruments from this setup's meter provider, with identical behavior in global and scoped mode.
 - **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and shares one configurable level gate.
 - **`withSpan(name, attrs?, fn)`** — wrap any sync or async function in a span; errors are recorded and PII in the error message is scrubbed before being attached to span status.
@@ -95,7 +95,7 @@ attribute guidance, and scoped mode.
 | Function                                      | Description                                                                                                |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `setupOtel(options): OtelHandle`              | Boots OTLP/HTTP traces + logs + metrics. The handle exposes `getMeter()`, providers, and `shutdown()`. Pass `register: false` for scoped mode. |
-| `setupOptionOtel(options): OptionOtelHandle`  | Creates an isolated, non-global trace + log runtime with its own endpoint, Resource attributes, and propagation header. |
+| `createIsolatedOtel(options): IsolatedOtelHandle` | Creates an isolated, non-global trace + log runtime with its own endpoint, Resource, and propagation header. Returns a new runtime on every call. |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
 | `instrumentFetch(options?): FetchInstrumentation` | Low-level wrap of `globalThis.fetch` for CLIENT spans + W3C propagation. Returns `{ unpatch() }`. `setupOtel` calls this on Bun; on Node it prefers native undici. |
 | `createInstrumentedFetch(baseFetch?, options?): typeof fetch` | Returns a NEW instrumented fetch (CLIENT spans + W3C propagation) wrapping `baseFetch` (default `globalThis.fetch`) without touching the global. For SDKs that take a `fetch` option. |
@@ -109,19 +109,20 @@ attribute guidance, and scoped mode.
 | `sanitizeErrorMessage(input)`                 | Masks every email and phone embedded in a free-form string.                                                |
 | `PHOTON_OTEL_VERSION`                         | Constant — current package version.                                                                        |
 
-## Isolated option runtime
+## Isolated runtime
 
-Use `setupOptionOtel()` when one process must send a small, explicitly recorded
-trace/log stream to a different OTLP backend without taking over the main OTel
-runtime:
+Use `createIsolatedOtel()` when one process must send a small, explicitly
+recorded trace/log stream to a different OTLP backend without taking over the
+main OTel runtime:
 
 ```ts
-import { setupOptionOtel } from "@photon-ai/otel";
+import { createIsolatedOtel } from "@photon-ai/otel";
 
-const auditOtel = setupOptionOtel({
+const auditOtel = createIsolatedOtel({
   endpoint: "https://audit-collector.example.com",
+  serviceName: "audit-service",
+  serviceVersion: "1.2.3",
   traceparentHeader: "x-audit-traceparent",
-  resourceAttributes: { "service.version": "1.2.3" },
 });
 const auditLogger = auditOtel.createLogger("example.audit");
 
@@ -132,9 +133,15 @@ await auditOtel.withSpan("audit.write", async () => {
 await auditOtel.shutdown();
 ```
 
-The option runtime has its own providers, processors, exporters, Resource, and
+`serviceName` / `serviceVersion` / `resourceAttributes` work exactly as they do
+in `setupOtel()`. Unlike `setupOtel()`, this is a plain factory rather than a
+process-wide singleton: each call returns a new independent runtime that you own
+and shut down yourself.
+
+The isolated runtime has its own providers, processors, exporters, Resource, and
 `AsyncLocalStorage` context. It does not register globals, instrument fetch,
-read the main `OTEL_EXPORTER_OTLP_*` variables, or require `setupOtel()`.
+read the main `OTEL_EXPORTER_OTLP_*` variables, add `deployment.environment`, or
+require `setupOtel()`.
 
 Its propagation helper carries only its isolated trace context through the
 configured `traceparentHeader`; it never changes the standard `traceparent`.

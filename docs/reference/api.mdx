@@ -8,6 +8,7 @@ Import everything from the package root:
 ```ts
 import {
   createInstrumentedFetch,
+  createIsolatedOtel,
   createLogger,
   getLogLevel,
   instrumentFetch,
@@ -17,7 +18,6 @@ import {
   sanitizePhone,
   sanitizeUrl,
   setLogLevel,
-  setupOptionOtel,
   setupOtel,
   withSpan,
 } from "@photon-ai/otel";
@@ -39,7 +39,7 @@ interface SetupOtelOptions {
   serviceVersion?: string;
   endpoint?: string;
   headers?: Record<string, string>;
-  resourceAttributes?: Record<string, string | number | boolean>;
+  resourceAttributes?: Attributes;
   logLevel?: LogLevel;
   instrumentFetch?: boolean | InstrumentFetchOptions;
   register?: boolean;
@@ -88,30 +88,40 @@ Create meters and instruments after setup. There is intentionally no top-level m
 
 `shutdown()` unpatches fetch instrumentation if setup installed it, shuts down all three providers, and clears the active setup handle.
 
-## `setupOptionOtel(options)`
+## `createIsolatedOtel(options)`
 
 Creates an isolated, non-global trace and log runtime. It does not depend on
 the main `setupOtel()` runtime.
 
 ```ts
-function setupOptionOtel(options: SetupOptionOtelOptions): OptionOtelHandle;
+function createIsolatedOtel(options: IsolatedOtelOptions): IsolatedOtelHandle;
 
-interface SetupOptionOtelOptions {
+interface IsolatedOtelOptions {
   endpoint: string;
   traceparentHeader: string;
-  headers?: Record<string, string>;
+  serviceName: string;
+  serviceVersion?: string;
   resourceAttributes?: Attributes;
+  headers?: Record<string, string>;
 }
 ```
 
+Unlike `setupOtel()`, this is not idempotent and holds no process state: each
+call returns a new independent runtime that the caller owns and shuts down.
+
 The endpoint is required and is not overridden by the main standard exporter
 environment variables. `/v1/traces` and `/v1/logs` are appended to a base
-endpoint. The runtime creates its own Resource from `resourceAttributes`; an
-omitted value produces an empty Resource. `traceparentHeader` must be a private
-carrier name and cannot be the standard `traceparent` header.
+endpoint. `traceparentHeader` must be a private carrier name and cannot be the
+standard `traceparent` header.
+
+The runtime builds its own Resource from `serviceName`, `serviceVersion`, and
+`resourceAttributes`, which behave exactly as in `setupOtel()` — an explicit
+`resourceAttributes` entry overrides the value derived from `serviceName` or
+`serviceVersion`. It copies nothing from the main runtime and does not add
+`deployment.environment`.
 
 ```ts
-interface OptionOtelHandle {
+interface IsolatedOtelHandle {
   createLogger(name: string, version?: string): {
     emit(record: Omit<LogRecord, "context">): void;
   };

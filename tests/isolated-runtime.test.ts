@@ -19,14 +19,14 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createOptionOtelRuntime,
-  setupOptionOtel,
-} from "../src/option-runtime";
+  createIsolatedOtel,
+  createIsolatedOtelRuntime,
+} from "../src/isolated-runtime";
 import { isOtelActive, setupOtel } from "../src/setup";
 import { withSpan as withMainSpan } from "../src/with-span";
 
 const ENDPOINT = "http://collector.internal:4318";
-const TRACEPARENT_HEADER = "x-test-option-traceparent";
+const TRACEPARENT_HEADER = "x-test-isolated-traceparent";
 const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/u;
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/u;
 const TRACEPARENT_PATTERN = /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/u;
@@ -63,7 +63,7 @@ vi.mock("@opentelemetry/exporter-trace-otlp-http", async () => {
 const traceparentParts = (headers: Headers): readonly string[] => {
   const value = headers.get(TRACEPARENT_HEADER);
   if (!value) {
-    throw new Error("expected option trace header");
+    throw new Error("expected isolated trace header");
   }
   return value.split("-");
 };
@@ -71,7 +71,7 @@ const traceparentParts = (headers: Headers): readonly string[] => {
 const createRuntime = (serviceName = "projects-service") => {
   const spanExporter = new InMemorySpanExporter();
   const logExporter = new InMemoryLogRecordExporter();
-  const runtime = createOptionOtelRuntime(
+  const runtime = createIsolatedOtelRuntime(
     { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
     resourceFromAttributes({ "service.name": serviceName }),
     {
@@ -92,48 +92,67 @@ afterEach(async () => {
   }
 });
 
-describe("setupOptionOtel", () => {
+describe("createIsolatedOtel", () => {
   it("starts independently without activating the main runtime", async () => {
-    const option = setupOptionOtel({
+    const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
+      serviceName: "projects-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
     expect(isOtelActive()).toBe(false);
-    await option.shutdown();
+    await isolated.shutdown();
   });
 
   it("does not replace or shut down the main runtime", async () => {
     const main = setupOtel({ serviceName: "main-service" });
-    const option = setupOptionOtel({
+    const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
+      serviceName: "projects-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
 
     expect(isOtelActive()).toBe(true);
-    await option.shutdown();
+    await isolated.shutdown();
     expect(isOtelActive()).toBe(true);
     expect(setupOtel({ serviceName: "ignored" })).toBe(main);
   });
 
-  it("keeps the main and option active spans independent", async () => {
+  it("returns a new independent runtime on every call", async () => {
+    const first = createIsolatedOtel({
+      endpoint: ENDPOINT,
+      serviceName: "projects-service",
+      traceparentHeader: TRACEPARENT_HEADER,
+    });
+    const second = createIsolatedOtel({
+      endpoint: ENDPOINT,
+      serviceName: "projects-service",
+      traceparentHeader: TRACEPARENT_HEADER,
+    });
+
+    expect(second).not.toBe(first);
+    await first.shutdown();
+    await second.shutdown();
+  });
+
+  it("keeps the main and isolated active spans independent", async () => {
     setupOtel({ serviceName: "main-service" });
-    const option = createRuntime();
+    const isolated = createRuntime();
 
     await withMainSpan("main", async () => {
       const mainSpanId = trace.getActiveSpan()?.spanContext().spanId;
       expect(mainSpanId).toMatch(SPAN_ID_PATTERN);
 
-      await option.runtime.withSpan("option", () => {
+      await isolated.runtime.withSpan("isolated", () => {
         expect(trace.getActiveSpan()?.spanContext().spanId).toBe(mainSpanId);
         const headers = new Headers();
-        option.runtime.propagation.inject(headers);
+        isolated.runtime.propagation.inject(headers);
         expect(traceparentParts(headers)[2]).not.toBe(mainSpanId);
       });
 
       expect(trace.getActiveSpan()?.spanContext().spanId).toBe(mainSpanId);
     });
 
-    await option.runtime.shutdown();
+    await isolated.runtime.shutdown();
   });
 
   it.each([
@@ -142,7 +161,11 @@ describe("setupOptionOtel", () => {
     "ftp://collector.internal",
   ])("rejects invalid endpoint %j", (endpoint) => {
     expect(() =>
-      setupOptionOtel({ endpoint, traceparentHeader: TRACEPARENT_HEADER })
+      createIsolatedOtel({
+        endpoint,
+        serviceName: "projects-service",
+        traceparentHeader: TRACEPARENT_HEADER,
+      })
     ).toThrowError(TypeError);
   });
 
@@ -153,7 +176,11 @@ describe("setupOptionOtel", () => {
     "TraceParent",
   ])("rejects invalid traceparent header %j", (traceparentHeader) => {
     expect(() =>
-      setupOptionOtel({ endpoint: ENDPOINT, traceparentHeader })
+      createIsolatedOtel({
+        endpoint: ENDPOINT,
+        serviceName: "projects-service",
+        traceparentHeader,
+      })
     ).toThrowError(TypeError);
   });
 
@@ -162,30 +189,70 @@ describe("setupOptionOtel", () => {
       resourceAttributes: { "main.runtime": true },
       serviceName: "main-service",
     });
-    const option = setupOptionOtel({
+    const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
+      serviceName: "isolated-service",
+      serviceVersion: "1.2.3",
       traceparentHeader: TRACEPARENT_HEADER,
-      resourceAttributes: {
-        "service.name": "option-service",
-        "service.version": "1.2.3",
-      },
     });
 
-    await option.withSpan("resource-check", () => undefined);
-    await option.shutdown();
+    await isolated.withSpan("resource-check", () => undefined);
+    await isolated.shutdown();
 
     expect(publicExportedSpans).toHaveLength(1);
     expect(publicExportedSpans[0]?.resource.attributes).toMatchObject({
-      "service.name": "option-service",
+      "service.name": "isolated-service",
       "service.version": "1.2.3",
     });
     expect(
       publicExportedSpans[0]?.resource.attributes["main.runtime"]
     ).toBeUndefined();
   });
+
+  it("omits service.version and never reads DEPLOYMENT_ENV", async () => {
+    const previousDeploymentEnv = process.env.DEPLOYMENT_ENV;
+    process.env.DEPLOYMENT_ENV = "production";
+    try {
+      const isolated = createIsolatedOtel({
+        endpoint: ENDPOINT,
+        serviceName: "isolated-service",
+        traceparentHeader: TRACEPARENT_HEADER,
+      });
+
+      await isolated.withSpan("resource-check", () => undefined);
+      await isolated.shutdown();
+
+      const attributes = publicExportedSpans[0]?.resource.attributes;
+      expect(attributes?.["service.name"]).toBe("isolated-service");
+      expect(attributes?.["service.version"]).toBeUndefined();
+      expect(attributes?.["deployment.environment"]).toBeUndefined();
+    } finally {
+      if (previousDeploymentEnv === undefined) {
+        delete process.env.DEPLOYMENT_ENV;
+      } else {
+        process.env.DEPLOYMENT_ENV = previousDeploymentEnv;
+      }
+    }
+  });
+
+  it("lets explicit resourceAttributes override the service identity", async () => {
+    const isolated = createIsolatedOtel({
+      endpoint: ENDPOINT,
+      resourceAttributes: { "service.name": "explicit-service" },
+      serviceName: "isolated-service",
+      traceparentHeader: TRACEPARENT_HEADER,
+    });
+
+    await isolated.withSpan("resource-check", () => undefined);
+    await isolated.shutdown();
+
+    expect(publicExportedSpans[0]?.resource.attributes["service.name"]).toBe(
+      "explicit-service"
+    );
+  });
 });
 
-describe("option runtime", () => {
+describe("isolated runtime", () => {
   it("keeps nested spans in one isolated trace across await", async () => {
     const { runtime, spanExporter } = createRuntime();
     const observedHeaders: string[][] = [];
@@ -241,7 +308,7 @@ describe("option runtime", () => {
     let callbackSpanId = "";
 
     await runtime.withActiveSpan(
-      "option.http",
+      "isolated.http",
       {
         attributes: { "photon.api_key.id": "pho_sk_test" },
         kind: SpanKind.SERVER,
@@ -282,7 +349,7 @@ describe("option runtime", () => {
 
   it("associates logs with the active local span and inherited Resource", async () => {
     const { logExporter, runtime } = createRuntime("projects-service");
-    const logger = runtime.createLogger("test.option-logger");
+    const logger = runtime.createLogger("test.isolated-logger");
 
     await runtime.withSpan("report.generate", () => {
       logger.emit({
@@ -296,7 +363,7 @@ describe("option runtime", () => {
 
     const [record] = logExporter.getFinishedLogRecords();
     expect(record?.body).toBe("Starting report generation");
-    expect(record?.instrumentationScope.name).toBe("test.option-logger");
+    expect(record?.instrumentationScope.name).toBe("test.isolated-logger");
     expect(record?.spanContext?.traceId).toMatch(TRACE_ID_PATTERN);
     expect(record?.spanContext?.spanId).toMatch(SPAN_ID_PATTERN);
     expect(record?.resource.attributes["service.name"]).toBe(
@@ -348,7 +415,7 @@ describe("option runtime", () => {
       onStart: () => undefined,
       shutdown: () => Promise.resolve(),
     } satisfies SpanProcessor;
-    const runtime = createOptionOtelRuntime(
+    const runtime = createIsolatedOtelRuntime(
       { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
       resourceFromAttributes({ "service.name": "projects-service" }),
       {
@@ -356,7 +423,7 @@ describe("option runtime", () => {
         spanProcessors: [failingSpanProcessor],
       }
     );
-    const logger = runtime.createLogger("test.option-logger");
+    const logger = runtime.createLogger("test.isolated-logger");
     const result = { ok: true };
 
     await expect(
@@ -376,7 +443,7 @@ describe("option runtime", () => {
       onStart: () => undefined,
       shutdown: () => Promise.reject(shutdownError),
     } satisfies SpanProcessor;
-    const runtime = createOptionOtelRuntime(
+    const runtime = createIsolatedOtelRuntime(
       { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
       resourceFromAttributes({ "service.name": "projects-service" }),
       { spanProcessors: [failingSpanProcessor] }
@@ -397,7 +464,7 @@ describe("option runtime", () => {
       upstreamSpanId = parts[2] ?? "";
       const extracted = downstream.runtime.propagation.extract(requestHeaders);
       if (!extracted) {
-        throw new Error("expected extracted option context");
+        throw new Error("expected extracted isolated context");
       }
       expect(downstream.runtime.hasActiveSpan()).toBe(false);
       await downstream.runtime.propagation.run(extracted, async () => {
@@ -429,7 +496,7 @@ describe("option runtime", () => {
       upstreamSpanId = traceparentParts(middleHeaders)[2] ?? "";
       const middleContext = middle.runtime.propagation.extract(middleHeaders);
       if (!middleContext) {
-        throw new Error("expected middle option context");
+        throw new Error("expected middle isolated context");
       }
 
       await middle.runtime.propagation.run(middleContext, async () => {
@@ -439,7 +506,7 @@ describe("option runtime", () => {
         const downstreamContext =
           downstream.runtime.propagation.extract(downstreamHeaders);
         if (!downstreamContext) {
-          throw new Error("expected downstream option context");
+          throw new Error("expected downstream isolated context");
         }
         await downstream.runtime.propagation.run(downstreamContext, () =>
           downstream.runtime.withSpan("service-c", () => undefined)
