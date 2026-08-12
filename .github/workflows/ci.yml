@@ -56,3 +56,15 @@ jobs:
         run: |
           test -f dist/index.js || (echo "dist/index.js missing" && exit 1)
           test -f dist/index.d.ts || (echo "dist/index.d.ts missing" && exit 1)
+      # PHOTON_OTEL_VERSION is inlined from package.json at build time. Assert on
+      # the built artifact, because that is what the release pipeline publishes
+      # after the bot bumps package.json.
+      - name: Verify dist reports the package version
+        run: |
+          bun -e '
+            const { PHOTON_OTEL_VERSION } = await import("./dist/index.js");
+            const { version } = await import("./package.json");
+            if (PHOTON_OTEL_VERSION !== version) {
+              throw new Error(`dist reports ${PHOTON_OTEL_VERSION}, package.json says ${version}`);
+            }
+          '

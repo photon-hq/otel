@@ -1,0 +1,74 @@
+---
+title: "Isolated runtime"
+description: "Run a second explicit trace and log pipeline without replacing the main OpenTelemetry runtime."
+---
+
+`createIsolatedOtel()` creates an independent instance-level trace and log
+runtime:
+
+```ts
+import { createIsolatedOtel } from "@photon-ai/otel";
+
+const isolated = createIsolatedOtel({
+  endpoint: "https://audit-collector.example.com",
+  serviceName: "audit-service",
+  serviceVersion: "1.2.3",
+  traceparentHeader: "x-audit-traceparent",
+});
+```
+
+The isolated runtime owns a separate `BasicTracerProvider`, `LoggerProvider`,
+processors, exporters, and async context. It does not register any global
+provider or context manager, patch fetch, configure metrics, or change the
+main runtime.
+
+Unlike `setupOtel()`, which is an idempotent process-wide singleton, this is a
+plain factory: every call returns a new independent runtime that the caller owns
+and shuts down.
+
+It creates a separate Resource from `serviceName`, `serviceVersion`, and
+`resourceAttributes` — the same identity options `setupOtel()` takes. It neither
+copies metadata from the main runtime nor requires the main runtime to exist,
+and it does not add `deployment.environment`; pass that through
+`resourceAttributes` if your queries need it.
+
+## Explicit spans and logs
+
+```ts
+const logger = isolated.createLogger("example.audit");
+
+await isolated.withSpan(
+  "report.generate",
+  { "app.entity.id": entityId },
+  async () => {
+    logger.emit({
+      body: "starting report generation",
+      eventName: "audit.message",
+    });
+  }
+);
+```
+
+Success leaves the Span status `UNSET`. If the callback throws, the runtime
+records a standard exception, marks the Span `ERROR`, ends it, and rethrows the
+same value. Export and processor failures do not replace the business result.
+
+The lower-level logger accepts OpenTelemetry `LogRecord` fields. A domain SDK
+should normally wrap it and define its own message/severity contract.
+
+## Propagation
+
+The handle exposes `capture()`, `inject()`, `extract()`, and `run()` through
+`isolated.propagation`. They operate only on this runtime's async context
+and use the configured `traceparentHeader`. Its value uses W3C Trace Context
+encoding; the standard main `traceparent` remains untouched.
+
+## Shutdown
+
+Shut down the instance runtime during application shutdown:
+
+```ts
+await isolated.shutdown();
+```
+
+Shutdown disables only this runtime's async context and providers.

@@ -19,10 +19,7 @@ import {
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
-import {
-  type Resource,
-  resourceFromAttributes,
-} from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import {
   BatchLogRecordProcessor,
   LoggerProvider as SdkLoggerProvider,
@@ -49,8 +46,12 @@ import {
 } from "./otlp-config";
 import { IS_BUN } from "./runtime";
 import { clearActiveProviders, setActiveProviders } from "./scope";
+import {
+  type ServiceResourceOptions,
+  serviceResourceAttributes,
+} from "./service-resource";
 
-export interface SetupOtelOptions {
+export interface SetupOtelOptions extends ServiceResourceOptions {
   /**
    * Default OTLP/HTTP base endpoint (e.g. `https://otel.example.com`). The
    * `/v1/traces`, `/v1/logs`, and `/v1/metrics` paths are appended
@@ -96,13 +97,6 @@ export interface SetupOtelOptions {
    * and auto fetch instrumentation defaults off (see `instrumentFetch`).
    */
   register?: boolean;
-  /**
-   * Extra resource attributes attached to every span/log/metric alongside
-   * `service.name` / `service.version`.
-   */
-  resourceAttributes?: Record<string, string | number | boolean>;
-  serviceName: string;
-  serviceVersion?: string;
 }
 
 export interface OtelHandle {
@@ -122,7 +116,6 @@ export interface OtelHandle {
 }
 
 let activeHandle: OtelHandle | undefined;
-let activeResource: Resource | undefined;
 
 const TRAILING_SLASH = /\/$/;
 
@@ -257,14 +250,11 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
     resolveOtlpHeaders("metrics", options.headers)
   );
 
-  const resource = resourceFromAttributes({
-    "service.name": options.serviceName,
-    ...(options.serviceVersion
-      ? { "service.version": options.serviceVersion }
-      : {}),
-    "deployment.environment": process.env.DEPLOYMENT_ENV ?? "development",
-    ...options.resourceAttributes,
-  });
+  const resource = resourceFromAttributes(
+    serviceResourceAttributes(options, {
+      "deployment.environment": process.env.DEPLOYMENT_ENV ?? "development",
+    })
+  );
 
   // Context manager + propagator are shared, process-global infrastructure (not
   // data routing), and the API rejects a duplicate registration — so these are
@@ -367,19 +357,12 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
       if (activeHandle === handle) {
         clearActiveProviders();
         activeHandle = undefined;
-        activeResource = undefined;
       }
     },
   };
 
-  activeResource = resource;
   activeHandle = handle;
   return handle;
-}
-
-/** Internal bridge used by the instance-level runtime factory. */
-export function activeOtelResource(): Resource | undefined {
-  return activeResource;
 }
 
 /**

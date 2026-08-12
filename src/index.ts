@@ -7,6 +7,11 @@ export {
   instrumentFetch,
 } from "./instrument-fetch";
 export {
+  createIsolatedOtel,
+  type IsolatedOtelHandle,
+  type IsolatedOtelOptions,
+} from "./isolated-runtime";
+export {
   createLogger,
   getLogLevel,
   type LogAttrs,
@@ -14,11 +19,6 @@ export {
   type PhotonLogger,
   setLogLevel,
 } from "./logger";
-export {
-  type OptionOtelHandle,
-  type SetupOptionOtelOptions,
-  setupOptionOtel,
-} from "./option-runtime";
 export {
   type SanitizeUrlOptions,
   sanitizeEmail,
