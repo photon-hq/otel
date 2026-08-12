@@ -163,7 +163,7 @@ export const createOptionOtelRuntime = (
     processors: logRecordProcessors,
   });
   const contextManager = new AsyncLocalStorageContextManager().enable();
-  const localSpanKey = createContextKey("@photon-ai/otel.option.local-span");
+  const localSpanKey = createContextKey("@photon-ai/option.otel.local-span");
   const traceContextPropagator = new W3CTraceContextPropagator();
   const tracer = tracerProvider.getTracer(INSTRUMENTATION_SCOPE);
   let shutdownPromise: Promise<void> | undefined;
