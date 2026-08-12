@@ -433,3 +433,5 @@ const PHOTON_OTEL_VERSION: string;
 ```
 
 It is used as the instrumentation scope version for package-created tracers and loggers.
+
+The value is read from `package.json` and inlined at build time, so it always matches the published version — the release pipeline bumps `package.json` alone and never needs a matching source edit.
