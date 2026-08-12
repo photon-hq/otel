@@ -328,9 +328,7 @@ describe("option runtime", () => {
     expect(failure?.events.some((event) => event.name === "exception")).toBe(
       true
     );
-    expect(failure?.instrumentationScope.name).toBe(
-      "@photon-ai/otel.option-runtime"
-    );
+    expect(failure?.instrumentationScope.name).toBe("@photon-ai/otel");
     await runtime.shutdown();
   });
 

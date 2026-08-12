@@ -33,9 +33,8 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { resolveOtlpEndpoint } from "./otlp-config";
 
-const OPTION_INSTRUMENTATION_SCOPE = "@photon-ai/otel.option-runtime";
+const INSTRUMENTATION_SCOPE = "@photon-ai/otel";
 const TRACEPARENT_KEY = "traceparent";
-const DIAGNOSTIC_SCOPE = "@photon-ai/otel.option-runtime";
 
 // biome-ignore assist/source/useSortedInterfaceMembers: required options precede optional configuration.
 export interface SetupOptionOtelOptions {
@@ -89,10 +88,10 @@ export interface OptionOtelHandle {
 const reportDiagnostic = (message: string, error?: unknown): void => {
   try {
     if (error === undefined) {
-      diag.warn(`[${DIAGNOSTIC_SCOPE}] ${message}`);
+      diag.warn(`[${INSTRUMENTATION_SCOPE}] ${message}`);
       return;
     }
-    diag.warn(`[${DIAGNOSTIC_SCOPE}] ${message}`, error);
+    diag.warn(`[${INSTRUMENTATION_SCOPE}] ${message}`, error);
   } catch {
     // Diagnostic reporting is itself fail-open.
   }
@@ -164,11 +163,9 @@ export const createOptionOtelRuntime = (
     processors: logRecordProcessors,
   });
   const contextManager = new AsyncLocalStorageContextManager().enable();
-  const localSpanKey = createContextKey(
-    "@photon-ai/otel.option-runtime.local-span"
-  );
+  const localSpanKey = createContextKey("@photon-ai/otel.option.local-span");
   const traceContextPropagator = new W3CTraceContextPropagator();
-  const tracer = tracerProvider.getTracer(OPTION_INSTRUMENTATION_SCOPE);
+  const tracer = tracerProvider.getTracer(INSTRUMENTATION_SCOPE);
   let shutdownPromise: Promise<void> | undefined;
 
   const propagation: OptionOtelHandle["propagation"] = {
