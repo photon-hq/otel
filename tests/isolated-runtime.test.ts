@@ -1,4 +1,5 @@
 import {
+  propagation,
   ROOT_CONTEXT,
   SpanKind,
   SpanStatusCode,
@@ -26,6 +27,9 @@ import { isOtelActive, setupOtel } from "../src/setup";
 import { withSpan as withMainSpan } from "../src/with-span";
 
 const ENDPOINT = "http://collector.internal:4318";
+const BAGGAGE_HEADER = "x-test-isolated-baggage";
+const BAGGAGE_KEY = "example.context.id";
+const BAGGAGE_VALUE = "context-123";
 const TRACEPARENT_HEADER = "x-test-isolated-traceparent";
 const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/u;
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -68,11 +72,18 @@ const traceparentParts = (headers: Headers): readonly string[] => {
   return value.split("-");
 };
 
-const createRuntime = (serviceName = "projects-service") => {
+const createRuntime = (
+  serviceName = "example-service",
+  baggageHeader?: string
+) => {
   const spanExporter = new InMemorySpanExporter();
   const logExporter = new InMemoryLogRecordExporter();
   const runtime = createIsolatedOtelRuntime(
-    { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
+    {
+      ...(baggageHeader === undefined ? {} : { baggageHeader }),
+      endpoint: ENDPOINT,
+      traceparentHeader: TRACEPARENT_HEADER,
+    },
     resourceFromAttributes({ "service.name": serviceName }),
     {
       logRecordProcessors: [new SimpleLogRecordProcessor(logExporter)],
@@ -96,7 +107,7 @@ describe("createIsolatedOtel", () => {
   it("starts independently without activating the main runtime", async () => {
     const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
     expect(isOtelActive()).toBe(false);
@@ -107,7 +118,7 @@ describe("createIsolatedOtel", () => {
     const main = setupOtel({ serviceName: "main-service" });
     const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
 
@@ -120,12 +131,12 @@ describe("createIsolatedOtel", () => {
   it("returns a new independent runtime on every call", async () => {
     const first = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
     const second = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
 
@@ -163,7 +174,7 @@ describe("createIsolatedOtel", () => {
     expect(() =>
       createIsolatedOtel({
         endpoint,
-        serviceName: "projects-service",
+        serviceName: "example-service",
         traceparentHeader: TRACEPARENT_HEADER,
       })
     ).toThrowError(TypeError);
@@ -172,14 +183,40 @@ describe("createIsolatedOtel", () => {
   it.each([
     "",
     "bad header\nname",
+    "baggage",
+    "Baggage",
     "traceparent",
     "TraceParent",
+    "tracestate",
+    "TraceState",
   ])("rejects invalid traceparent header %j", (traceparentHeader) => {
     expect(() =>
       createIsolatedOtel({
         endpoint: ENDPOINT,
-        serviceName: "projects-service",
+        serviceName: "example-service",
         traceparentHeader,
+      })
+    ).toThrowError(TypeError);
+  });
+
+  it.each([
+    "",
+    "bad header\nname",
+    "baggage",
+    "Baggage",
+    "traceparent",
+    "TraceParent",
+    "tracestate",
+    "TraceState",
+    TRACEPARENT_HEADER,
+    TRACEPARENT_HEADER.toUpperCase(),
+  ])("rejects invalid baggage header %j", (baggageHeader) => {
+    expect(() =>
+      createIsolatedOtel({
+        baggageHeader,
+        endpoint: ENDPOINT,
+        serviceName: "example-service",
+        traceparentHeader: TRACEPARENT_HEADER,
       })
     ).toThrowError(TypeError);
   });
@@ -310,7 +347,7 @@ describe("isolated runtime", () => {
     await runtime.withActiveSpan(
       "isolated.http",
       {
-        attributes: { "photon.api_key.id": "pho_sk_test" },
+        attributes: { "example.request.id": "request-123" },
         kind: SpanKind.SERVER,
         parentContext: ROOT_CONTEXT,
       },
@@ -323,7 +360,7 @@ describe("isolated runtime", () => {
     const [server] = spanExporter.getFinishedSpans();
     expect(server?.kind).toBe(SpanKind.SERVER);
     expect(server?.parentSpanContext).toBeUndefined();
-    expect(server?.attributes["photon.api_key.id"]).toBe("pho_sk_test");
+    expect(server?.attributes["example.request.id"]).toBe("request-123");
     expect(callbackSpanId).toBe(server?.spanContext().spanId);
     await runtime.shutdown();
   });
@@ -348,7 +385,7 @@ describe("isolated runtime", () => {
   });
 
   it("associates logs with the active local span and inherited Resource", async () => {
-    const { logExporter, runtime } = createRuntime("projects-service");
+    const { logExporter, runtime } = createRuntime("example-service");
     const logger = runtime.createLogger("test.isolated-logger");
 
     await runtime.withSpan("report.generate", () => {
@@ -366,13 +403,11 @@ describe("isolated runtime", () => {
     expect(record?.instrumentationScope.name).toBe("test.isolated-logger");
     expect(record?.spanContext?.traceId).toMatch(TRACE_ID_PATTERN);
     expect(record?.spanContext?.spanId).toMatch(SPAN_ID_PATTERN);
-    expect(record?.resource.attributes["service.name"]).toBe(
-      "projects-service"
-    );
+    expect(record?.resource.attributes["service.name"]).toBe("example-service");
     await runtime.shutdown();
   });
 
-  it("records errors, returns original values, and rethrows the same error", async () => {
+  it("marks thrown errors without recording details and rethrows the same error", async () => {
     const { runtime, spanExporter } = createRuntime();
     const value = { ok: true };
 
@@ -392,10 +427,91 @@ describe("isolated runtime", () => {
       .find((span) => span.name === "failure");
     expect(success?.status.code).toBe(SpanStatusCode.UNSET);
     expect(failure?.status.code).toBe(SpanStatusCode.ERROR);
-    expect(failure?.events.some((event) => event.name === "exception")).toBe(
-      true
-    );
+    expect(failure?.status.message).toBeUndefined();
+    expect(failure?.events).toEqual([]);
+    expect(failure?.attributes["error.type"]).toBeUndefined();
     expect(failure?.instrumentationScope.name).toBe("@photon-ai/otel");
+    await runtime.shutdown();
+  });
+
+  it("records error details only when explicitly requested", async () => {
+    const { runtime, spanExporter } = createRuntime();
+    const error = new TypeError("generation failed");
+
+    await runtime.withSpan("explicit-error", () => {
+      runtime.recordError(error);
+    });
+
+    const [span] = spanExporter.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes["error.type"]).toBe("TypeError");
+    expect(span?.events).toHaveLength(1);
+    const [event] = span?.events ?? [];
+    expect(event?.name).toBe("exception");
+    expect(event?.attributes?.["exception.type"]).toBe("TypeError");
+    expect(event?.attributes?.["exception.message"]).toBe("generation failed");
+    expect(event?.attributes?.["exception.stacktrace"]).toContain(
+      "TypeError: generation failed"
+    );
+    await runtime.shutdown();
+  });
+
+  it("handles non-Error thrown and explicitly recorded values", async () => {
+    const { runtime, spanExporter } = createRuntime();
+    const thrown = { reason: "generation failed" };
+
+    await expect(
+      runtime.withSpan("non-error-throw", () => {
+        throw thrown;
+      })
+    ).rejects.toBe(thrown);
+    await runtime.withSpan("non-error-record", () => {
+      runtime.recordError(503);
+    });
+
+    const thrownSpan = spanExporter
+      .getFinishedSpans()
+      .find((span) => span.name === "non-error-throw");
+    expect(thrownSpan?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(thrownSpan?.events).toEqual([]);
+    expect(thrownSpan?.attributes["error.type"]).toBeUndefined();
+
+    const recordedSpan = spanExporter
+      .getFinishedSpans()
+      .find((span) => span.name === "non-error-record");
+    expect(recordedSpan?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(recordedSpan?.attributes["error.type"]).toBe("number");
+    expect(recordedSpan?.events).toHaveLength(1);
+    expect(recordedSpan?.events[0]?.attributes?.["exception.message"]).toBe(
+      "503"
+    );
+    await runtime.shutdown();
+  });
+
+  it("does not duplicate an explicitly recorded error when it is thrown", async () => {
+    const { runtime, spanExporter } = createRuntime();
+    const error = new Error("generation failed");
+
+    await expect(
+      runtime.withSpan("explicit-thrown-error", () => {
+        runtime.recordError(error);
+        throw error;
+      })
+    ).rejects.toBe(error);
+
+    const [span] = spanExporter.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(
+      span?.events.filter((event) => event.name === "exception")
+    ).toHaveLength(1);
+    await runtime.shutdown();
+  });
+
+  it("ignores recordError outside a local recording Span", async () => {
+    const { runtime, spanExporter } = createRuntime();
+
+    expect(() => runtime.recordError(new Error("ignored"))).not.toThrow();
+    expect(spanExporter.getFinishedSpans()).toEqual([]);
     await runtime.shutdown();
   });
 
@@ -417,7 +533,7 @@ describe("isolated runtime", () => {
     } satisfies SpanProcessor;
     const runtime = createIsolatedOtelRuntime(
       { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
-      resourceFromAttributes({ "service.name": "projects-service" }),
+      resourceFromAttributes({ "service.name": "example-service" }),
       {
         logRecordProcessors: [failingLogProcessor],
         spanProcessors: [failingSpanProcessor],
@@ -445,11 +561,211 @@ describe("isolated runtime", () => {
     } satisfies SpanProcessor;
     const runtime = createIsolatedOtelRuntime(
       { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
-      resourceFromAttributes({ "service.name": "projects-service" }),
+      resourceFromAttributes({ "service.name": "example-service" }),
       { spanProcessors: [failingSpanProcessor] }
     );
 
     await expect(runtime.shutdown()).rejects.toBe(shutdownError);
+  });
+
+  it("does not inject baggage when no private baggage carrier is configured", async () => {
+    const { runtime } = createRuntime();
+    const baggage = propagation.createBaggage({
+      [BAGGAGE_KEY]: { value: BAGGAGE_VALUE },
+    });
+    const baggageContext = propagation.setBaggage(
+      runtime.propagation.capture(),
+      baggage
+    );
+    const outgoing = new Headers({ baggage: "main=value" });
+
+    await runtime.propagation.run(baggageContext, () => {
+      runtime.propagation.inject(outgoing);
+    });
+
+    expect(outgoing.has(BAGGAGE_HEADER)).toBe(false);
+    expect(outgoing.get("baggage")).toBe("main=value");
+    await runtime.shutdown();
+  });
+
+  it("round-trips native OTel baggage through a private carrier", async () => {
+    const upstream = createRuntime("service-a", BAGGAGE_HEADER);
+    const downstream = createRuntime("service-b", BAGGAGE_HEADER);
+    const baggage = propagation.createBaggage({
+      [BAGGAGE_KEY]: { value: BAGGAGE_VALUE },
+    });
+    const baggageContext = propagation.setBaggage(
+      upstream.runtime.propagation.capture(),
+      baggage
+    );
+    const requestHeaders = new Headers({ baggage: "main=value" });
+
+    await upstream.runtime.propagation.run(baggageContext, () =>
+      upstream.runtime.withSpan("service-a", () => {
+        upstream.runtime.propagation.inject(requestHeaders);
+      })
+    );
+
+    expect(requestHeaders.get(BAGGAGE_HEADER)).toBe(
+      `${BAGGAGE_KEY}=${BAGGAGE_VALUE}`
+    );
+    expect(requestHeaders.get("baggage")).toBe("main=value");
+    const extracted = downstream.runtime.propagation.extract(requestHeaders);
+    if (!extracted) {
+      throw new Error("expected extracted isolated context");
+    }
+    expect(
+      propagation.getBaggage(extracted)?.getEntry(BAGGAGE_KEY)?.value
+    ).toBe(BAGGAGE_VALUE);
+
+    await downstream.runtime.propagation.run(extracted, async () => {
+      await Promise.resolve();
+      expect(
+        propagation
+          .getBaggage(downstream.runtime.propagation.capture())
+          ?.getEntry(BAGGAGE_KEY)?.value
+      ).toBe(BAGGAGE_VALUE);
+    });
+
+    await Promise.all([
+      upstream.runtime.shutdown(),
+      downstream.runtime.shutdown(),
+    ]);
+  });
+
+  it("restores nested baggage scopes and captured snapshots without leaking runtimes", async () => {
+    const first = createRuntime("service-a", BAGGAGE_HEADER);
+    const second = createRuntime("service-b", BAGGAGE_HEADER);
+    const outerContext = propagation.setBaggage(
+      first.runtime.propagation.capture(),
+      propagation.createBaggage({
+        [BAGGAGE_KEY]: { value: "outer-value" },
+      })
+    );
+    let snapshot = ROOT_CONTEXT;
+
+    await first.runtime.propagation.run(outerContext, async () => {
+      await Promise.resolve();
+      snapshot = first.runtime.propagation.capture();
+      expect(
+        propagation.getBaggage(snapshot)?.getEntry(BAGGAGE_KEY)?.value
+      ).toBe("outer-value");
+      expect(
+        propagation
+          .getBaggage(second.runtime.propagation.capture())
+          ?.getEntry(BAGGAGE_KEY)
+      ).toBeUndefined();
+
+      const innerContext = propagation.setBaggage(
+        snapshot,
+        propagation.createBaggage({
+          [BAGGAGE_KEY]: { value: "inner-value" },
+        })
+      );
+      await first.runtime.propagation.run(innerContext, async () => {
+        await Promise.resolve();
+        expect(
+          propagation
+            .getBaggage(first.runtime.propagation.capture())
+            ?.getEntry(BAGGAGE_KEY)?.value
+        ).toBe("inner-value");
+      });
+      expect(
+        propagation
+          .getBaggage(first.runtime.propagation.capture())
+          ?.getEntry(BAGGAGE_KEY)?.value
+      ).toBe("outer-value");
+    });
+
+    expect(
+      propagation
+        .getBaggage(first.runtime.propagation.capture())
+        ?.getEntry(BAGGAGE_KEY)
+    ).toBeUndefined();
+    await first.runtime.propagation.run(snapshot, () => {
+      expect(
+        propagation
+          .getBaggage(first.runtime.propagation.capture())
+          ?.getEntry(BAGGAGE_KEY)?.value
+      ).toBe("outer-value");
+    });
+
+    await Promise.all([first.runtime.shutdown(), second.runtime.shutdown()]);
+  });
+
+  it("extracts a baggage-only isolated Context", async () => {
+    const { runtime } = createRuntime("service-b", BAGGAGE_HEADER);
+    const extracted = runtime.propagation.extract(
+      new Headers({
+        [BAGGAGE_HEADER]: `${BAGGAGE_KEY}=${BAGGAGE_VALUE}`,
+      })
+    );
+
+    expect(extracted).toBeDefined();
+    expect(extracted && trace.getSpanContext(extracted)).toBeUndefined();
+    expect(
+      extracted &&
+        propagation.getBaggage(extracted)?.getEntry(BAGGAGE_KEY)?.value
+    ).toBe(BAGGAGE_VALUE);
+
+    const outgoing = new Headers();
+    if (extracted) {
+      await runtime.propagation.run(extracted, () => {
+        runtime.propagation.inject(outgoing);
+      });
+    }
+    expect(outgoing.get(BAGGAGE_HEADER)).toBe(
+      `${BAGGAGE_KEY}=${BAGGAGE_VALUE}`
+    );
+    expect(outgoing.has(TRACEPARENT_HEADER)).toBe(false);
+    await runtime.shutdown();
+  });
+
+  it("extracts trace and baggage independently", async () => {
+    const { runtime } = createRuntime("service-b", BAGGAGE_HEADER);
+    const baggageWithInvalidTrace = runtime.propagation.extract(
+      new Headers({
+        [BAGGAGE_HEADER]: `${BAGGAGE_KEY}=${BAGGAGE_VALUE}`,
+        [TRACEPARENT_HEADER]: "not-valid",
+      })
+    );
+    expect(
+      baggageWithInvalidTrace &&
+        propagation.getBaggage(baggageWithInvalidTrace)?.getEntry(BAGGAGE_KEY)
+          ?.value
+    ).toBe(BAGGAGE_VALUE);
+
+    const traceWithInvalidBaggage = runtime.propagation.extract(
+      new Headers({
+        [BAGGAGE_HEADER]: "not a valid member",
+        [TRACEPARENT_HEADER]: MAIN_TRACEPARENT,
+      })
+    );
+    expect(traceWithInvalidBaggage).toBeDefined();
+    const extractedSpanContext = traceWithInvalidBaggage
+      ? trace.getSpanContext(traceWithInvalidBaggage)
+      : undefined;
+    expect(
+      extractedSpanContext && trace.isSpanContextValid(extractedSpanContext)
+    ).toBe(true);
+    expect(
+      traceWithInvalidBaggage && propagation.getBaggage(traceWithInvalidBaggage)
+    ).toBeUndefined();
+    await runtime.shutdown();
+  });
+
+  it("removes spoofed private baggage and preserves standard baggage", async () => {
+    const { runtime } = createRuntime("service-a", BAGGAGE_HEADER);
+    const outgoing = new Headers({
+      [BAGGAGE_HEADER]: `${BAGGAGE_KEY}=spoofed`,
+      baggage: "main=value",
+    });
+
+    runtime.propagation.inject(outgoing);
+
+    expect(outgoing.has(BAGGAGE_HEADER)).toBe(false);
+    expect(outgoing.get("baggage")).toBe("main=value");
+    await runtime.shutdown();
   });
 
   it("propagates between runtimes without creating an automatic server span", async () => {
@@ -517,6 +833,49 @@ describe("isolated runtime", () => {
     expect(middle.spanExporter.getFinishedSpans()).toEqual([]);
     const [downstreamSpan] = downstream.spanExporter.getFinishedSpans();
     expect(downstreamSpan?.parentSpanContext?.spanId).toBe(upstreamSpanId);
+    await Promise.all([
+      upstream.runtime.shutdown(),
+      middle.runtime.shutdown(),
+      downstream.runtime.shutdown(),
+    ]);
+  });
+
+  it("propagates baggage through a middle service that records no Span", async () => {
+    const upstream = createRuntime("service-a", BAGGAGE_HEADER);
+    const middle = createRuntime("service-b", BAGGAGE_HEADER);
+    const downstream = createRuntime("service-c", BAGGAGE_HEADER);
+    const baggageContext = propagation.setBaggage(
+      upstream.runtime.propagation.capture(),
+      propagation.createBaggage({
+        [BAGGAGE_KEY]: { value: BAGGAGE_VALUE },
+      })
+    );
+
+    await upstream.runtime.propagation.run(baggageContext, () =>
+      upstream.runtime.withSpan("service-a", async () => {
+        const middleHeaders = new Headers();
+        upstream.runtime.propagation.inject(middleHeaders);
+        const middleContext = middle.runtime.propagation.extract(middleHeaders);
+        if (!middleContext) {
+          throw new Error("expected middle isolated context");
+        }
+
+        await middle.runtime.propagation.run(middleContext, () => {
+          const downstreamHeaders = new Headers();
+          middle.runtime.propagation.inject(downstreamHeaders);
+          const downstreamContext =
+            downstream.runtime.propagation.extract(downstreamHeaders);
+          if (!downstreamContext) {
+            throw new Error("expected downstream isolated context");
+          }
+          expect(
+            propagation.getBaggage(downstreamContext)?.getEntry(BAGGAGE_KEY)
+              ?.value
+          ).toBe(BAGGAGE_VALUE);
+        });
+      })
+    );
+
     await Promise.all([
       upstream.runtime.shutdown(),
       middle.runtime.shutdown(),
