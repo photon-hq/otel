@@ -6,6 +6,7 @@ import {
   defaultTextMapSetter,
   diag,
   INVALID_SPAN_CONTEXT,
+  propagation as otelPropagation,
   ROOT_CONTEXT,
   type Span,
   type SpanOptions,
@@ -14,7 +15,10 @@ import {
 } from "@opentelemetry/api";
 import type { Logger, LogRecord } from "@opentelemetry/api-logs";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
-import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import {
+  W3CBaggagePropagator,
+  W3CTraceContextPropagator,
+} from "@opentelemetry/core";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
@@ -38,6 +42,7 @@ import {
 } from "./service-resource";
 
 const INSTRUMENTATION_SCOPE = "@photon-ai/otel";
+const BAGGAGE_KEY = "baggage";
 const TRACEPARENT_KEY = "traceparent";
 
 // biome-ignore assist/source/useSortedInterfaceMembers: required options precede optional configuration.
@@ -47,8 +52,10 @@ export interface IsolatedOtelOptions extends ServiceResourceOptions {
    * runtime. Standard main OTel environment variables do not override it.
    */
   endpoint: string;
-  /** Private carrier header; the standard `traceparent` name is rejected. */
+  /** Private trace carrier; standard `traceparent` and `baggage` are rejected. */
   traceparentHeader: string;
+  /** Optional private W3C Baggage carrier; standard `baggage` is untouched. */
+  baggageHeader?: string;
   /** Optional OTLP transport headers, typically used for Collector auth. */
   headers?: Record<string, string>;
 }
@@ -56,7 +63,7 @@ export interface IsolatedOtelOptions extends ServiceResourceOptions {
 /** Transport-only options; the Resource is supplied separately. */
 type IsolatedOtelTransport = Pick<
   IsolatedOtelOptions,
-  "endpoint" | "headers" | "traceparentHeader"
+  "baggageHeader" | "endpoint" | "headers" | "traceparentHeader"
 >;
 
 export interface IsolatedOtelHandle {
@@ -78,6 +85,8 @@ export interface IsolatedOtelHandle {
     /** Run a callback in this runtime's isolated async context. */
     run: <T>(captured: Context, fn: () => T) => T;
   };
+  /** Explicitly record exception details on the current local recording Span. */
+  recordError(error: unknown): void;
   shutdown(): Promise<void>;
   /** Run a callback with a Span active only in this runtime's private Context. */
   withActiveSpan<T>(
@@ -127,21 +136,51 @@ export const createIsolatedOtelRuntime = (
   if (!(endpointProtocol === "http:" || endpointProtocol === "https:")) {
     throw new TypeError("createIsolatedOtel: endpoint must use http or https");
   }
-  const traceparentHeader = options.traceparentHeader;
-  try {
-    if (!traceparentHeader) {
-      throw new TypeError("traceparentHeader is empty");
+  const validateHeaderName = (
+    headerName: string,
+    optionName: "baggageHeader" | "traceparentHeader"
+  ): void => {
+    try {
+      if (!headerName) {
+        throw new TypeError(`${optionName} is empty`);
+      }
+      new Headers().set(headerName, "validate");
+    } catch {
+      throw new TypeError(
+        `createIsolatedOtel: ${optionName} must be a valid HTTP header name`
+      );
     }
-    new Headers().set(traceparentHeader, "validate");
-  } catch {
+  };
+
+  const traceparentHeader = options.traceparentHeader;
+  validateHeaderName(traceparentHeader, "traceparentHeader");
+  const normalizedTraceparentHeader = traceparentHeader.toLowerCase();
+  if (
+    normalizedTraceparentHeader === TRACEPARENT_KEY ||
+    normalizedTraceparentHeader === BAGGAGE_KEY
+  ) {
     throw new TypeError(
-      "createIsolatedOtel: traceparentHeader must be a valid HTTP header name"
+      "createIsolatedOtel: traceparentHeader must not be traceparent or baggage"
     );
   }
-  if (traceparentHeader.toLowerCase() === TRACEPARENT_KEY) {
-    throw new TypeError(
-      "createIsolatedOtel: traceparentHeader must not be traceparent"
-    );
+
+  const baggageHeader = options.baggageHeader;
+  if (baggageHeader !== undefined) {
+    validateHeaderName(baggageHeader, "baggageHeader");
+    const normalizedBaggageHeader = baggageHeader.toLowerCase();
+    if (
+      normalizedBaggageHeader === TRACEPARENT_KEY ||
+      normalizedBaggageHeader === BAGGAGE_KEY
+    ) {
+      throw new TypeError(
+        "createIsolatedOtel: baggageHeader must not be traceparent or baggage"
+      );
+    }
+    if (normalizedBaggageHeader === normalizedTraceparentHeader) {
+      throw new TypeError(
+        "createIsolatedOtel: baggageHeader must differ from traceparentHeader"
+      );
+    }
   }
   const headers = options.headers ? { ...options.headers } : undefined;
   const traceEndpoint = resolveOtlpEndpoint("traces", endpoint, {});
@@ -172,6 +211,7 @@ export const createIsolatedOtelRuntime = (
   });
   const contextManager = new AsyncLocalStorageContextManager().enable();
   const localSpanKey = createContextKey("@photon-ai/isolated-otel.local-span");
+  const baggagePropagator = new W3CBaggagePropagator();
   const traceContextPropagator = new W3CTraceContextPropagator();
   const tracer = tracerProvider.getTracer(INSTRUMENTATION_SCOPE);
   let shutdownPromise: Promise<void> | undefined;
@@ -179,42 +219,79 @@ export const createIsolatedOtelRuntime = (
   const propagation: IsolatedOtelHandle["propagation"] = {
     capture: () => contextManager.active(),
     extract: (headersObject) => {
-      const value = headersObject.get(traceparentHeader);
-      if (!value) {
-        return;
-      }
-      try {
-        const extracted = traceContextPropagator.extract(
-          ROOT_CONTEXT,
-          { [TRACEPARENT_KEY]: value },
-          defaultTextMapGetter
-        );
-        const spanContext = trace.getSpanContext(extracted);
-        if (spanContext && trace.isSpanContextValid(spanContext)) {
-          return extracted;
+      let extracted = ROOT_CONTEXT;
+      let foundContext = false;
+
+      const traceValue = headersObject.get(traceparentHeader);
+      if (traceValue) {
+        try {
+          const traceExtracted = traceContextPropagator.extract(
+            extracted,
+            { [TRACEPARENT_KEY]: traceValue },
+            defaultTextMapGetter
+          );
+          const spanContext = trace.getSpanContext(traceExtracted);
+          if (spanContext && trace.isSpanContextValid(spanContext)) {
+            extracted = traceExtracted;
+            foundContext = true;
+          } else {
+            reportDiagnostic("ignored invalid isolated trace header");
+          }
+        } catch (error) {
+          reportDiagnostic("ignored invalid isolated trace header", error);
         }
-        reportDiagnostic("ignored invalid isolated trace header");
-        return;
-      } catch (error) {
-        reportDiagnostic("ignored invalid isolated trace header", error);
-        return;
       }
+
+      const baggageValue = baggageHeader
+        ? headersObject.get(baggageHeader)
+        : undefined;
+      if (baggageValue) {
+        try {
+          const baggageExtracted = baggagePropagator.extract(
+            extracted,
+            { [BAGGAGE_KEY]: baggageValue },
+            defaultTextMapGetter
+          );
+          const baggage = otelPropagation.getBaggage(baggageExtracted);
+          if (baggage && baggage.getAllEntries().length > 0) {
+            extracted = baggageExtracted;
+            foundContext = true;
+          } else {
+            reportDiagnostic("ignored invalid isolated baggage header");
+          }
+        } catch (error) {
+          reportDiagnostic("ignored invalid isolated baggage header", error);
+        }
+      }
+
+      return foundContext ? extracted : undefined;
     },
     inject: (headersObject, captured) => {
+      const active = captured ?? contextManager.active();
       try {
         headersObject.delete(traceparentHeader);
         const carrier: Record<string, string> = {};
-        traceContextPropagator.inject(
-          captured ?? contextManager.active(),
-          carrier,
-          defaultTextMapSetter
-        );
+        traceContextPropagator.inject(active, carrier, defaultTextMapSetter);
         const value = carrier[TRACEPARENT_KEY];
         if (value) {
           headersObject.set(traceparentHeader, value);
         }
       } catch (error) {
         reportDiagnostic("failed to inject isolated trace header", error);
+      }
+
+      if (baggageHeader) {
+        try {
+          headersObject.delete(baggageHeader);
+          const carrier: Record<string, string> = {};
+          baggagePropagator.inject(active, carrier, defaultTextMapSetter);
+          const value = carrier[BAGGAGE_KEY];
+          if (value) {
+            headersObject.set(baggageHeader, value);
+          }
+        } catch (error) {
+          reportDiagnostic("failed to inject isolated baggage header", error);
+        }
       }
     },
     run: (captured, fn) => contextManager.with(captured, fn),
@@ -244,14 +321,9 @@ export const createIsolatedOtelRuntime = (
         return await fn(span);
       } catch (error) {
         try {
-          span.recordException(error instanceof Error ? error : String(error));
-          span.setAttribute(
-            "error.type",
-            error instanceof Error ? error.constructor.name : typeof error
-          );
           span.setStatus({ code: SpanStatusCode.ERROR });
         } catch (telemetryError) {
-          reportDiagnostic("failed to record Span error", telemetryError);
+          reportDiagnostic("failed to set Span error status", telemetryError);
         }
         throw error;
       } finally {
@@ -294,6 +366,46 @@ export const createIsolatedOtelRuntime = (
     hasActiveSpan: () =>
       contextManager.active().getValue(localSpanKey) !== undefined,
     propagation,
+    recordError(error) {
+      const span = contextManager.active().getValue(localSpanKey) as
+        | Span
+        | undefined;
+      if (!span?.isRecording()) {
+        reportDiagnostic("ignored recordError outside a local recording Span");
+        return;
+      }
+
+      try {
+        span.setStatus({ code: SpanStatusCode.ERROR });
+      } catch (telemetryError) {
+        reportDiagnostic("failed to set Span error status", telemetryError);
+      }
+
+      let exception: Error | string;
+      let errorType: string;
+      try {
+        exception = error instanceof Error ? error : String(error);
+        errorType =
+          error instanceof Error ? error.constructor.name : typeof error;
+      } catch (telemetryError) {
+        reportDiagnostic(
+          "failed to normalize Span error details",
+          telemetryError
+        );
+        return;
+      }
+
+      try {
+        span.recordException(exception);
+      } catch (telemetryError) {
+        reportDiagnostic("failed to record Span exception", telemetryError);
+      }
+      try {
+        span.setAttribute("error.type", errorType);
+      } catch (telemetryError) {
+        reportDiagnostic("failed to set Span error type", telemetryError);
+      }
+    },
     shutdown() {
       if (!shutdownPromise) {
         shutdownPromise = (async () => {
