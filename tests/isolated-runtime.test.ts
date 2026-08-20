@@ -73,7 +73,7 @@ const traceparentParts = (headers: Headers): readonly string[] => {
 };
 
 const createRuntime = (
-  serviceName = "projects-service",
+  serviceName = "example-service",
   baggageHeader?: string
 ) => {
   const spanExporter = new InMemorySpanExporter();
@@ -107,7 +107,7 @@ describe("createIsolatedOtel", () => {
   it("starts independently without activating the main runtime", async () => {
     const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
     expect(isOtelActive()).toBe(false);
@@ -118,7 +118,7 @@ describe("createIsolatedOtel", () => {
     const main = setupOtel({ serviceName: "main-service" });
     const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
 
@@ -131,12 +131,12 @@ describe("createIsolatedOtel", () => {
   it("returns a new independent runtime on every call", async () => {
     const first = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
     const second = createIsolatedOtel({
       endpoint: ENDPOINT,
-      serviceName: "projects-service",
+      serviceName: "example-service",
       traceparentHeader: TRACEPARENT_HEADER,
     });
 
@@ -174,7 +174,7 @@ describe("createIsolatedOtel", () => {
     expect(() =>
       createIsolatedOtel({
         endpoint,
-        serviceName: "projects-service",
+        serviceName: "example-service",
         traceparentHeader: TRACEPARENT_HEADER,
       })
     ).toThrowError(TypeError);
@@ -193,7 +193,7 @@ describe("createIsolatedOtel", () => {
     expect(() =>
       createIsolatedOtel({
         endpoint: ENDPOINT,
-        serviceName: "projects-service",
+        serviceName: "example-service",
         traceparentHeader,
       })
     ).toThrowError(TypeError);
@@ -215,7 +215,7 @@ describe("createIsolatedOtel", () => {
       createIsolatedOtel({
         baggageHeader,
         endpoint: ENDPOINT,
-        serviceName: "projects-service",
+        serviceName: "example-service",
         traceparentHeader: TRACEPARENT_HEADER,
       })
     ).toThrowError(TypeError);
@@ -385,7 +385,7 @@ describe("isolated runtime", () => {
   });
 
   it("associates logs with the active local span and inherited Resource", async () => {
-    const { logExporter, runtime } = createRuntime("projects-service");
+    const { logExporter, runtime } = createRuntime("example-service");
     const logger = runtime.createLogger("test.isolated-logger");
 
     await runtime.withSpan("report.generate", () => {
@@ -403,9 +403,7 @@ describe("isolated runtime", () => {
     expect(record?.instrumentationScope.name).toBe("test.isolated-logger");
     expect(record?.spanContext?.traceId).toMatch(TRACE_ID_PATTERN);
     expect(record?.spanContext?.spanId).toMatch(SPAN_ID_PATTERN);
-    expect(record?.resource.attributes["service.name"]).toBe(
-      "projects-service"
-    );
+    expect(record?.resource.attributes["service.name"]).toBe("example-service");
     await runtime.shutdown();
   });
 
@@ -535,7 +533,7 @@ describe("isolated runtime", () => {
     } satisfies SpanProcessor;
     const runtime = createIsolatedOtelRuntime(
       { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
-      resourceFromAttributes({ "service.name": "projects-service" }),
+      resourceFromAttributes({ "service.name": "example-service" }),
       {
         logRecordProcessors: [failingLogProcessor],
         spanProcessors: [failingSpanProcessor],
@@ -563,7 +561,7 @@ describe("isolated runtime", () => {
     } satisfies SpanProcessor;
     const runtime = createIsolatedOtelRuntime(
       { endpoint: ENDPOINT, traceparentHeader: TRACEPARENT_HEADER },
-      resourceFromAttributes({ "service.name": "projects-service" }),
+      resourceFromAttributes({ "service.name": "example-service" }),
       { spanProcessors: [failingSpanProcessor] }
     );
 
