@@ -28,8 +28,8 @@ import { withSpan as withMainSpan } from "../src/with-span";
 
 const ENDPOINT = "http://collector.internal:4318";
 const BAGGAGE_HEADER = "x-test-isolated-baggage";
-const BAGGAGE_KEY = "photon.project.id";
-const BAGGAGE_VALUE = "pho_prj_test";
+const BAGGAGE_KEY = "example.context.id";
+const BAGGAGE_VALUE = "context-123";
 const TRACEPARENT_HEADER = "x-test-isolated-traceparent";
 const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/u;
 const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/u;
@@ -343,7 +343,7 @@ describe("isolated runtime", () => {
     await runtime.withActiveSpan(
       "isolated.http",
       {
-        attributes: { "photon.api_key.id": "pho_sk_test" },
+        attributes: { "example.request.id": "request-123" },
         kind: SpanKind.SERVER,
         parentContext: ROOT_CONTEXT,
       },
@@ -356,7 +356,7 @@ describe("isolated runtime", () => {
     const [server] = spanExporter.getFinishedSpans();
     expect(server?.kind).toBe(SpanKind.SERVER);
     expect(server?.parentSpanContext).toBeUndefined();
-    expect(server?.attributes["photon.api_key.id"]).toBe("pho_sk_test");
+    expect(server?.attributes["example.request.id"]).toBe("request-123");
     expect(callbackSpanId).toBe(server?.spanContext().spanId);
     await runtime.shutdown();
   });
@@ -637,7 +637,7 @@ describe("isolated runtime", () => {
     const outerContext = propagation.setBaggage(
       first.runtime.propagation.capture(),
       propagation.createBaggage({
-        [BAGGAGE_KEY]: { value: "outer-project" },
+        [BAGGAGE_KEY]: { value: "outer-value" },
       })
     );
     let snapshot = ROOT_CONTEXT;
@@ -647,7 +647,7 @@ describe("isolated runtime", () => {
       snapshot = first.runtime.propagation.capture();
       expect(
         propagation.getBaggage(snapshot)?.getEntry(BAGGAGE_KEY)?.value
-      ).toBe("outer-project");
+      ).toBe("outer-value");
       expect(
         propagation
           .getBaggage(second.runtime.propagation.capture())
@@ -657,7 +657,7 @@ describe("isolated runtime", () => {
       const innerContext = propagation.setBaggage(
         snapshot,
         propagation.createBaggage({
-          [BAGGAGE_KEY]: { value: "inner-project" },
+          [BAGGAGE_KEY]: { value: "inner-value" },
         })
       );
       await first.runtime.propagation.run(innerContext, async () => {
@@ -666,13 +666,13 @@ describe("isolated runtime", () => {
           propagation
             .getBaggage(first.runtime.propagation.capture())
             ?.getEntry(BAGGAGE_KEY)?.value
-        ).toBe("inner-project");
+        ).toBe("inner-value");
       });
       expect(
         propagation
           .getBaggage(first.runtime.propagation.capture())
           ?.getEntry(BAGGAGE_KEY)?.value
-      ).toBe("outer-project");
+      ).toBe("outer-value");
     });
 
     expect(
@@ -685,7 +685,7 @@ describe("isolated runtime", () => {
         propagation
           .getBaggage(first.runtime.propagation.capture())
           ?.getEntry(BAGGAGE_KEY)?.value
-      ).toBe("outer-project");
+      ).toBe("outer-value");
     });
 
     await Promise.all([first.runtime.shutdown(), second.runtime.shutdown()]);
