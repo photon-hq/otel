@@ -187,6 +187,8 @@ describe("createIsolatedOtel", () => {
     "Baggage",
     "traceparent",
     "TraceParent",
+    "tracestate",
+    "TraceState",
   ])("rejects invalid traceparent header %j", (traceparentHeader) => {
     expect(() =>
       createIsolatedOtel({
@@ -204,6 +206,8 @@ describe("createIsolatedOtel", () => {
     "Baggage",
     "traceparent",
     "TraceParent",
+    "tracestate",
+    "TraceState",
     TRACEPARENT_HEADER,
     TRACEPARENT_HEADER.toUpperCase(),
   ])("rejects invalid baggage header %j", (baggageHeader) => {

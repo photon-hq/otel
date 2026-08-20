@@ -44,6 +44,12 @@ import {
 const INSTRUMENTATION_SCOPE = "@photon-ai/otel";
 const BAGGAGE_KEY = "baggage";
 const TRACEPARENT_KEY = "traceparent";
+const TRACESTATE_KEY = "tracestate";
+const STANDARD_PROPAGATION_HEADERS = new Set([
+  BAGGAGE_KEY,
+  TRACEPARENT_KEY,
+  TRACESTATE_KEY,
+]);
 
 // biome-ignore assist/source/useSortedInterfaceMembers: required options precede optional configuration.
 export interface IsolatedOtelOptions extends ServiceResourceOptions {
@@ -52,9 +58,9 @@ export interface IsolatedOtelOptions extends ServiceResourceOptions {
    * runtime. Standard main OTel environment variables do not override it.
    */
   endpoint: string;
-  /** Private trace carrier; standard `traceparent` and `baggage` are rejected. */
+  /** Private trace carrier; standard propagation header names are rejected. */
   traceparentHeader: string;
-  /** Optional private W3C Baggage carrier; standard `baggage` is untouched. */
+  /** Optional private W3C Baggage carrier; standard headers are untouched. */
   baggageHeader?: string;
   /** Optional OTLP transport headers, typically used for Collector auth. */
   headers?: Record<string, string>;
@@ -155,12 +161,9 @@ export const createIsolatedOtelRuntime = (
   const traceparentHeader = options.traceparentHeader;
   validateHeaderName(traceparentHeader, "traceparentHeader");
   const normalizedTraceparentHeader = traceparentHeader.toLowerCase();
-  if (
-    normalizedTraceparentHeader === TRACEPARENT_KEY ||
-    normalizedTraceparentHeader === BAGGAGE_KEY
-  ) {
+  if (STANDARD_PROPAGATION_HEADERS.has(normalizedTraceparentHeader)) {
     throw new TypeError(
-      "createIsolatedOtel: traceparentHeader must not be traceparent or baggage"
+      "createIsolatedOtel: traceparentHeader must not be traceparent, tracestate, or baggage"
     );
   }
 
@@ -168,12 +171,9 @@ export const createIsolatedOtelRuntime = (
   if (baggageHeader !== undefined) {
     validateHeaderName(baggageHeader, "baggageHeader");
     const normalizedBaggageHeader = baggageHeader.toLowerCase();
-    if (
-      normalizedBaggageHeader === TRACEPARENT_KEY ||
-      normalizedBaggageHeader === BAGGAGE_KEY
-    ) {
+    if (STANDARD_PROPAGATION_HEADERS.has(normalizedBaggageHeader)) {
       throw new TypeError(
-        "createIsolatedOtel: baggageHeader must not be traceparent or baggage"
+        "createIsolatedOtel: baggageHeader must not be traceparent, tracestate, or baggage"
       );
     }
     if (normalizedBaggageHeader === normalizedTraceparentHeader) {

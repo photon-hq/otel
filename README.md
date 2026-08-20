@@ -158,7 +158,8 @@ require `setupOtel()`.
 Its propagation helper carries isolated trace context through the configured
 `traceparentHeader`. When `baggageHeader` is present, `inject()` and `extract()`
 also serialize standard OTel Baggage through that private carrier. They never
-change the standard `traceparent` or `baggage` headers used by main OTel.
+change the standard `traceparent`, `tracestate`, or `baggage` headers used by
+main OTel.
 
 The runtime does not add a second Baggage API. Use
 `@opentelemetry/api`'s `createBaggage()` / `setBaggage()` on the Context returned
