@@ -50,8 +50,26 @@ await isolated.withSpan(
 ```
 
 Success leaves the Span status `UNSET`. If the callback throws, the runtime
-records a standard exception, marks the Span `ERROR`, ends it, and rethrows the
-same value. Export and processor failures do not replace the business result.
+marks the Span `ERROR`, ends it, and rethrows the same value without exporting
+exception details. Record caller-curated public details explicitly while the
+Span is active:
+
+```ts
+try {
+  await generateReport();
+} catch (error) {
+  isolated.recordError({
+    message: "The report could not be generated",
+    type: "ReportGenerationError",
+  });
+  throw error;
+}
+```
+
+The runtime exports `type` as `error.type` and `exception.type`, plus the
+optional `message` as `exception.message`. It never accepts or exports a raw
+`Error` or stack trace. Export and processor failures do not replace the
+business result.
 
 The lower-level logger accepts OpenTelemetry `LogRecord` fields. A domain SDK
 should normally wrap it and define its own message/severity contract.

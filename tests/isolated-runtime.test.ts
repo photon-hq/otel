@@ -18,10 +18,19 @@ import {
   SimpleSpanProcessor,
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from "vitest";
 import {
   createIsolatedOtel,
   createIsolatedOtelRuntime,
+  type IsolatedOtelErrorDetails,
 } from "../src/isolated-runtime";
 import { isOtelActive, setupOtel } from "../src/setup";
 import { withSpan as withMainSpan } from "../src/with-span";
@@ -104,6 +113,14 @@ afterEach(async () => {
 });
 
 describe("createIsolatedOtel", () => {
+  it("requires structured error details", () => {
+    expectTypeOf<Error>().not.toMatchTypeOf<IsolatedOtelErrorDetails>();
+    expectTypeOf<{
+      message?: string;
+      type: string;
+    }>().toMatchTypeOf<IsolatedOtelErrorDetails>();
+  });
+
   it("starts independently without activating the main runtime", async () => {
     const isolated = createIsolatedOtel({
       endpoint: ENDPOINT,
@@ -434,29 +451,7 @@ describe("isolated runtime", () => {
     await runtime.shutdown();
   });
 
-  it("records error details only when explicitly requested", async () => {
-    const { runtime, spanExporter } = createRuntime();
-    const error = new TypeError("generation failed");
-
-    await runtime.withSpan("explicit-error", () => {
-      runtime.recordError(error);
-    });
-
-    const [span] = spanExporter.getFinishedSpans();
-    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
-    expect(span?.attributes["error.type"]).toBe("TypeError");
-    expect(span?.events).toHaveLength(1);
-    const [event] = span?.events ?? [];
-    expect(event?.name).toBe("exception");
-    expect(event?.attributes?.["exception.type"]).toBe("TypeError");
-    expect(event?.attributes?.["exception.message"]).toBe("generation failed");
-    expect(event?.attributes?.["exception.stacktrace"]).toContain(
-      "TypeError: generation failed"
-    );
-    await runtime.shutdown();
-  });
-
-  it("handles non-Error thrown and explicitly recorded values", async () => {
+  it("marks non-Error thrown values without recording details", async () => {
     const { runtime, spanExporter } = createRuntime();
     const thrown = { reason: "generation failed" };
 
@@ -465,26 +460,112 @@ describe("isolated runtime", () => {
         throw thrown;
       })
     ).rejects.toBe(thrown);
-    await runtime.withSpan("non-error-record", () => {
-      runtime.recordError(503);
+
+    const [span] = spanExporter.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes["error.type"]).toBeUndefined();
+    expect(span?.events).toEqual([]);
+    await runtime.shutdown();
+  });
+
+  it("records error details only when explicitly requested", async () => {
+    const { runtime, spanExporter } = createRuntime();
+
+    await runtime.withSpan("explicit-error", () => {
+      runtime.recordError({
+        message: "Generation failed",
+        type: "GenerationError",
+      });
     });
 
-    const thrownSpan = spanExporter
-      .getFinishedSpans()
-      .find((span) => span.name === "non-error-throw");
-    expect(thrownSpan?.status.code).toBe(SpanStatusCode.ERROR);
-    expect(thrownSpan?.events).toEqual([]);
-    expect(thrownSpan?.attributes["error.type"]).toBeUndefined();
+    const [span] = spanExporter.getFinishedSpans();
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes["error.type"]).toBe("GenerationError");
+    expect(span?.events).toHaveLength(1);
+    const [event] = span?.events ?? [];
+    expect(event?.name).toBe("exception");
+    expect(event?.attributes?.["exception.type"]).toBe("GenerationError");
+    expect(event?.attributes?.["exception.message"]).toBe("Generation failed");
+    expect(event?.attributes?.["exception.stacktrace"]).toBeUndefined();
+    await runtime.shutdown();
+  });
 
-    const recordedSpan = spanExporter
-      .getFinishedSpans()
-      .find((span) => span.name === "non-error-record");
-    expect(recordedSpan?.status.code).toBe(SpanStatusCode.ERROR);
-    expect(recordedSpan?.attributes["error.type"]).toBe("number");
-    expect(recordedSpan?.events).toHaveLength(1);
-    expect(recordedSpan?.events[0]?.attributes?.["exception.message"]).toBe(
-      "503"
-    );
+  it("records an error type without requiring a public message", async () => {
+    const { runtime, spanExporter } = createRuntime();
+
+    await runtime.withSpan("typed-error", () => {
+      runtime.recordError({ type: "GenerationError" });
+    });
+
+    const [span] = spanExporter.getFinishedSpans();
+    const [event] = span?.events ?? [];
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(span?.attributes["error.type"]).toBe("GenerationError");
+    expect(event?.attributes?.["exception.type"]).toBe("GenerationError");
+    expect(event?.attributes?.["exception.message"]).toBeUndefined();
+    expect(event?.attributes?.["exception.stacktrace"]).toBeUndefined();
+    await runtime.shutdown();
+  });
+
+  it("does not export raw or malformed error inputs", async () => {
+    const { runtime, spanExporter } = createRuntime();
+    const recordInvalidError = runtime.recordError as (value: unknown) => void;
+    const invalidValues: readonly unknown[] = [
+      new Error("secret@example.com"),
+      "secret@example.com",
+      503,
+      { message: "secret@example.com", type: "" },
+      { message: 503, type: "GenerationError" },
+    ];
+
+    for (const [index, value] of invalidValues.entries()) {
+      await runtime.withSpan(`invalid-error-${index}`, () => {
+        recordInvalidError(value);
+      });
+    }
+
+    const spans = spanExporter.getFinishedSpans();
+    expect(spans).toHaveLength(invalidValues.length);
+    for (const span of spans) {
+      expect(span.status.code).toBe(SpanStatusCode.ERROR);
+      expect(span.attributes["error.type"]).toBeUndefined();
+      expect(span.events).toEqual([]);
+    }
+    const exportedDetails = spans.map((span) => ({
+      attributes: span.attributes,
+      events: span.events,
+    }));
+    expect(JSON.stringify(exportedDetails)).not.toContain("secret@example.com");
+    await runtime.shutdown();
+  });
+
+  it("exports only allowlisted fields from runtime objects", async () => {
+    const { runtime, spanExporter } = createRuntime();
+    const recordRuntimeError = runtime.recordError as (value: unknown) => void;
+
+    await runtime.withSpan("allowlisted-error", () => {
+      recordRuntimeError({
+        cause: new Error("private cause"),
+        code: "PRIVATE_CODE",
+        message: "Public failure",
+        stack: "private stack",
+        type: "GenerationError",
+      });
+    });
+
+    const [span] = spanExporter.getFinishedSpans();
+    const serialized = JSON.stringify({
+      attributes: span?.attributes,
+      events: span?.events,
+    });
+    expect(span?.attributes["error.type"]).toBe("GenerationError");
+    expect(span?.events[0]?.attributes).toEqual({
+      "exception.message": "Public failure",
+      "exception.type": "GenerationError",
+    });
+    expect(serialized).not.toContain("private cause");
+    expect(serialized).not.toContain("PRIVATE_CODE");
+    expect(serialized).not.toContain("private stack");
     await runtime.shutdown();
   });
 
@@ -494,7 +575,10 @@ describe("isolated runtime", () => {
 
     await expect(
       runtime.withSpan("explicit-thrown-error", () => {
-        runtime.recordError(error);
+        runtime.recordError({
+          message: "Generation failed",
+          type: "GenerationError",
+        });
         throw error;
       })
     ).rejects.toBe(error);
@@ -510,7 +594,12 @@ describe("isolated runtime", () => {
   it("ignores recordError outside a local recording Span", async () => {
     const { runtime, spanExporter } = createRuntime();
 
-    expect(() => runtime.recordError(new Error("ignored"))).not.toThrow();
+    expect(() =>
+      runtime.recordError({
+        message: "Ignored",
+        type: "IgnoredError",
+      })
+    ).not.toThrow();
     expect(spanExporter.getFinishedSpans()).toEqual([]);
     await runtime.shutdown();
   });

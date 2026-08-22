@@ -168,9 +168,26 @@ the isolated `propagation.run()` as shown above.
 
 If an isolated Span callback throws, the runtime marks the Span `ERROR` and
 rethrows the same value without automatically recording its type, message, or
-stack. Call `auditOtel.recordError(error)` inside the active callback when those
-exception details should be exported. Calling it outside a local recording Span
-is a diagnostic no-op.
+stack. Call `auditOtel.recordError({ type, message? })` inside the active
+callback to export caller-curated exception details:
+
+```ts
+try {
+  await writeAuditEntry();
+} catch (error) {
+  auditOtel.recordError({
+    message: "The audit entry could not be written",
+    type: "AuditWriteError",
+  });
+  throw error;
+}
+```
+
+`type` is exported as both Span-level `error.type` and exception-event
+`exception.type`. The optional `message` is exported as `exception.message` and
+must already be safe for the isolated backend. Raw `Error` objects and stack
+traces are not accepted or exported. Calling `recordError()` outside a local
+recording Span is a diagnostic no-op.
 
 ### Logger signatures
 

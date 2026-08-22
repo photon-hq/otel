@@ -8,6 +8,7 @@ export {
 } from "./instrument-fetch";
 export {
   createIsolatedOtel,
+  type IsolatedOtelErrorDetails,
   type IsolatedOtelHandle,
   type IsolatedOtelOptions,
 } from "./isolated-runtime";

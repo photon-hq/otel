@@ -72,6 +72,14 @@ type IsolatedOtelTransport = Pick<
   "baggageHeader" | "endpoint" | "headers" | "traceparentHeader"
 >;
 
+// biome-ignore assist/source/useSortedInterfaceMembers: the required type precedes the optional public message.
+export interface IsolatedOtelErrorDetails {
+  /** Stable, low-cardinality error classification exported as `error.type`. */
+  readonly type: string;
+  /** Optional caller-curated message that is safe for the isolated backend. */
+  readonly message?: string;
+}
+
 export interface IsolatedOtelHandle {
   createLogger(
     name: string,
@@ -91,8 +99,8 @@ export interface IsolatedOtelHandle {
     /** Run a callback in this runtime's isolated async context. */
     run: <T>(captured: Context, fn: () => T) => T;
   };
-  /** Explicitly record exception details on the current local recording Span. */
-  recordError(error: unknown): void;
+  /** Explicitly record caller-curated error details on the active local Span. */
+  recordError(details: IsolatedOtelErrorDetails): void;
   shutdown(): Promise<void>;
   /** Run a callback with a Span active only in this runtime's private Context. */
   withActiveSpan<T>(
@@ -117,6 +125,38 @@ const reportDiagnostic = (message: string, error?: unknown): void => {
     diag.warn(`[${INSTRUMENTATION_SCOPE}] ${message}`, error);
   } catch {
     // Diagnostic reporting is itself fail-open.
+  }
+};
+
+const normalizeErrorDetails = (
+  value: unknown
+): IsolatedOtelErrorDetails | undefined => {
+  try {
+    if (
+      value instanceof Error ||
+      typeof value !== "object" ||
+      value === null ||
+      !("type" in value)
+    ) {
+      return;
+    }
+
+    const type = value.type;
+    if (typeof type !== "string" || type.trim().length === 0) {
+      return;
+    }
+
+    const message = "message" in value ? value.message : undefined;
+    if (!(message === undefined || typeof message === "string")) {
+      return;
+    }
+
+    return {
+      ...(message === undefined ? {} : { message }),
+      type,
+    };
+  } catch {
+    return;
   }
 };
 
@@ -366,7 +406,7 @@ export const createIsolatedOtelRuntime = (
     hasActiveSpan: () =>
       contextManager.active().getValue(localSpanKey) !== undefined,
     propagation,
-    recordError(error) {
+    recordError(details) {
       const span = contextManager.active().getValue(localSpanKey) as
         | Span
         | undefined;
@@ -381,27 +421,24 @@ export const createIsolatedOtelRuntime = (
         reportDiagnostic("failed to set Span error status", telemetryError);
       }
 
-      let exception: Error | string;
-      let errorType: string;
-      try {
-        exception = error instanceof Error ? error : String(error);
-        errorType =
-          error instanceof Error ? error.constructor.name : typeof error;
-      } catch (telemetryError) {
-        reportDiagnostic(
-          "failed to normalize Span error details",
-          telemetryError
-        );
+      const normalizedDetails = normalizeErrorDetails(details);
+      if (!normalizedDetails) {
+        reportDiagnostic("ignored recordError with invalid error details");
         return;
       }
 
       try {
-        span.recordException(exception);
+        span.recordException({
+          ...(normalizedDetails.message === undefined
+            ? {}
+            : { message: normalizedDetails.message }),
+          name: normalizedDetails.type,
+        });
       } catch (telemetryError) {
         reportDiagnostic("failed to record Span exception", telemetryError);
       }
       try {
-        span.setAttribute("error.type", errorType);
+        span.setAttribute("error.type", normalizedDetails.type);
       } catch (telemetryError) {
         reportDiagnostic("failed to set Span error type", telemetryError);
       }
