@@ -429,9 +429,7 @@ export const createIsolatedOtelRuntime = (
 
       try {
         span.recordException({
-          ...(normalizedDetails.message === undefined
-            ? {}
-            : { message: normalizedDetails.message }),
+          message: normalizedDetails.message,
           name: normalizedDetails.type,
         });
       } catch (telemetryError) {
