@@ -30,7 +30,7 @@ import {
 import {
   createIsolatedOtel,
   createIsolatedOtelRuntime,
-  type IsolatedOtelErrorDetails,
+  type IsolatedOtelHandle,
 } from "../src/isolated-runtime";
 import { isOtelActive, setupOtel } from "../src/setup";
 import { withSpan as withMainSpan } from "../src/with-span";
@@ -113,12 +113,10 @@ afterEach(async () => {
 });
 
 describe("createIsolatedOtel", () => {
-  it("requires structured error details", () => {
-    expectTypeOf<Error>().not.toMatchTypeOf<IsolatedOtelErrorDetails>();
-    expectTypeOf<{
-      message?: string;
-      type: string;
-    }>().toMatchTypeOf<IsolatedOtelErrorDetails>();
+  it("keeps the low-level error input untyped", () => {
+    expectTypeOf<
+      Parameters<IsolatedOtelHandle["recordError"]>[0]
+    >().toEqualTypeOf<unknown>();
   });
 
   it("starts independently without activating the main runtime", async () => {
@@ -509,9 +507,11 @@ describe("isolated runtime", () => {
 
   it("does not export raw or malformed error inputs", async () => {
     const { runtime, spanExporter } = createRuntime();
-    const recordInvalidError = runtime.recordError as (value: unknown) => void;
     const invalidValues: readonly unknown[] = [
       new Error("secret@example.com"),
+      Object.assign(new Error("secret@example.com"), {
+        type: "GenerationError",
+      }),
       "secret@example.com",
       503,
       { message: "secret@example.com", type: "" },
@@ -520,7 +520,7 @@ describe("isolated runtime", () => {
 
     for (const [index, value] of invalidValues.entries()) {
       await runtime.withSpan(`invalid-error-${index}`, () => {
-        recordInvalidError(value);
+        runtime.recordError(value);
       });
     }
 
@@ -541,10 +541,9 @@ describe("isolated runtime", () => {
 
   it("exports only allowlisted fields from runtime objects", async () => {
     const { runtime, spanExporter } = createRuntime();
-    const recordRuntimeError = runtime.recordError as (value: unknown) => void;
 
     await runtime.withSpan("allowlisted-error", () => {
-      recordRuntimeError({
+      runtime.recordError({
         cause: new Error("private cause"),
         code: "PRIVATE_CODE",
         message: "Public failure",

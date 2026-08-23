@@ -132,7 +132,7 @@ interface IsolatedOtelHandle {
     inject(headers: Headers, captured?: Context): void;
     run<T>(captured: Context, fn: () => T): T;
   };
-  recordError(details: IsolatedOtelErrorDetails): void;
+  recordError(details: unknown): void;
   withActiveSpan<T>(
     name: string,
     options: SpanOptions & { parentContext?: Context },
@@ -146,11 +146,6 @@ interface IsolatedOtelHandle {
   ): Promise<T>;
   shutdown(): Promise<void>;
 }
-
-interface IsolatedOtelErrorDetails {
-  type: string;
-  message?: string;
-}
 ```
 
 `withActiveSpan()` is the instrumentation-level form. It accepts standard
@@ -161,11 +156,14 @@ Span and does not make `hasActiveSpan()` true; the business callback still runs.
 The propagation helper uses the configured `traceparentHeader` and never
 changes the standard `traceparent`.
 
-`recordError()` marks the active local Span `ERROR`, exports `type` as both
-`error.type` and `exception.type`, and exports an optional caller-curated
-`message` as `exception.message`. It does not accept or export raw `Error`
-objects or stack traces. Invalid JavaScript input is a diagnostic no-op for
-details and never changes business execution.
+The low-level `recordError()` boundary accepts `unknown` and validates it at
+runtime. A structured `{ type: string, message?: string }` value marks the
+active local Span `ERROR`, exports `type` as both `error.type` and
+`exception.type`, and exports an optional caller-curated `message` as
+`exception.message`. It does not accept or export raw `Error` objects or stack
+traces. Invalid input is a diagnostic no-op for details and never changes
+business execution. Application-facing wrappers can expose a narrower input
+type.
 
 ## `isOtelActive()`
 

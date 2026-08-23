@@ -72,11 +72,9 @@ type IsolatedOtelTransport = Pick<
   "baggageHeader" | "endpoint" | "headers" | "traceparentHeader"
 >;
 
-// biome-ignore assist/source/useSortedInterfaceMembers: the required type precedes the optional public message.
-export interface IsolatedOtelErrorDetails {
-  /** Stable, low-cardinality error classification exported as `error.type`. */
+// biome-ignore assist/source/useSortedInterfaceMembers: the required type precedes the optional message.
+interface NormalizedErrorDetails {
   readonly type: string;
-  /** Optional caller-curated message that is safe for the isolated backend. */
   readonly message?: string;
 }
 
@@ -99,8 +97,8 @@ export interface IsolatedOtelHandle {
     /** Run a callback in this runtime's isolated async context. */
     run: <T>(captured: Context, fn: () => T) => T;
   };
-  /** Explicitly record caller-curated error details on the active local Span. */
-  recordError(details: IsolatedOtelErrorDetails): void;
+  /** Validate and explicitly record caller-curated error details on the active local Span. */
+  recordError(details: unknown): void;
   shutdown(): Promise<void>;
   /** Run a callback with a Span active only in this runtime's private Context. */
   withActiveSpan<T>(
@@ -130,7 +128,7 @@ const reportDiagnostic = (message: string, error?: unknown): void => {
 
 const normalizeErrorDetails = (
   value: unknown
-): IsolatedOtelErrorDetails | undefined => {
+): NormalizedErrorDetails | undefined => {
   try {
     if (
       value instanceof Error ||
