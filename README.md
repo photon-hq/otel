@@ -155,6 +155,11 @@ The isolated runtime has its own providers, processors, exporters, Resource, and
 read the main `OTEL_EXPORTER_OTLP_*` variables, add `deployment.environment`, or
 require `setupOtel()`.
 
+Pass `idGenerator` to replace the runtime's random trace and span ID generator
+with any OpenTelemetry `IdGenerator`. It is forwarded unchanged to the isolated
+`BasicTracerProvider`, which consults it for every Span and, for trace IDs,
+only when a Span has no parent.
+
 Its propagation helper carries isolated trace context through the configured
 `traceparentHeader`. When `baggageHeader` is present, `inject()` and `extract()`
 also serialize standard OTel Baggage through that private carrier. They never

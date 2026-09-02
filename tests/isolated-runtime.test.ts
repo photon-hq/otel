@@ -904,3 +904,81 @@ describe("isolated runtime", () => {
     await runtime.shutdown();
   });
 });
+
+describe("idGenerator", () => {
+  const sequentialIdGenerator = () => {
+    let spanIds = 0;
+    let traceIds = 0;
+    return {
+      generateSpanId: () => {
+        spanIds += 1;
+        return spanIds.toString(16).padStart(16, "0");
+      },
+      generateTraceId: () => {
+        traceIds += 1;
+        return traceIds.toString(16).padStart(32, "0");
+      },
+      traceIdCalls: () => traceIds,
+    };
+  };
+  const paddedId = (value: number, length: number): string =>
+    value.toString(16).padStart(length, "0");
+
+  it("uses the configured generator for root Spans and inherits below them", async () => {
+    const spanExporter = new InMemorySpanExporter();
+    const idGenerator = sequentialIdGenerator();
+    const runtime = createIsolatedOtelRuntime(
+      {
+        endpoint: ENDPOINT,
+        idGenerator,
+        traceparentHeader: TRACEPARENT_HEADER,
+      },
+      resourceFromAttributes({ "service.name": "example-service" }),
+      { spanProcessors: [new SimpleSpanProcessor(spanExporter)] }
+    );
+
+    await runtime.withSpan("root", () =>
+      runtime.withSpan("child", () => undefined)
+    );
+    await runtime.withSpan("second-root", () => undefined);
+
+    const spans = spanExporter.getFinishedSpans();
+    const contextOf = (name: string) =>
+      spans.find((span) => span.name === name)?.spanContext();
+    expect(contextOf("root")?.traceId).toBe(paddedId(1, 32));
+    expect(contextOf("child")?.traceId).toBe(paddedId(1, 32));
+    expect(contextOf("second-root")?.traceId).toBe(paddedId(2, 32));
+    expect(idGenerator.traceIdCalls()).toBe(2);
+    expect(contextOf("root")?.spanId).toBe(paddedId(1, 16));
+    expect(contextOf("child")?.spanId).toBe(paddedId(2, 16));
+    await runtime.shutdown();
+  });
+
+  it("keeps the SDK's random generator when none is configured", async () => {
+    const { runtime, spanExporter } = createRuntime();
+
+    await runtime.withSpan("root", () => undefined);
+
+    const spanContext = spanExporter.getFinishedSpans()[0]?.spanContext();
+    expect(spanContext?.traceId).toMatch(TRACE_ID_PATTERN);
+    expect(spanContext?.spanId).toMatch(SPAN_ID_PATTERN);
+    await runtime.shutdown();
+  });
+
+  it("accepts the generator on the public factory", async () => {
+    const isolated = createIsolatedOtel({
+      endpoint: ENDPOINT,
+      idGenerator: sequentialIdGenerator(),
+      serviceName: "example-service",
+      traceparentHeader: TRACEPARENT_HEADER,
+    });
+
+    await isolated.withSpan("root", () => undefined);
+    await isolated.shutdown();
+
+    const exported = publicExportedSpans[0] as unknown as
+      | { spanContext(): { traceId: string } }
+      | undefined;
+    expect(exported?.spanContext().traceId).toBe(paddedId(1, 32));
+  });
+});

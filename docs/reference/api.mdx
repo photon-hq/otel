@@ -103,11 +103,18 @@ interface IsolatedOtelOptions {
   serviceVersion?: string;
   resourceAttributes?: Attributes;
   headers?: Record<string, string>;
+  idGenerator?: IdGenerator;
 }
 ```
 
 Unlike `setupOtel()`, this is not idempotent and holds no process state: each
 call returns a new independent runtime that the caller owns and shuts down.
+
+`idGenerator` is the standard OpenTelemetry `IdGenerator` from
+`@opentelemetry/sdk-trace-base`, forwarded unchanged to the isolated
+`BasicTracerProvider`. The SDK calls `generateSpanId()` for every Span and
+`generateTraceId()` only for Spans without a parent. Omit it to keep the SDK's
+random generator.
 
 The endpoint is required and is not overridden by the main standard exporter
 environment variables. `/v1/traces` and `/v1/logs` are appended to a base

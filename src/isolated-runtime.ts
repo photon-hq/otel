@@ -33,6 +33,7 @@ import {
 import {
   BasicTracerProvider,
   BatchSpanProcessor,
+  type IdGenerator,
   type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { resolveOtlpEndpoint } from "./otlp-config";
@@ -64,12 +65,20 @@ export interface IsolatedOtelOptions extends ServiceResourceOptions {
   baggageHeader?: string;
   /** Optional OTLP transport headers, typically used for Collector auth. */
   headers?: Record<string, string>;
+  /**
+   * Replaces the runtime's trace and span ID generator. This is the standard
+   * OpenTelemetry `IdGenerator` extension point, forwarded unchanged to the
+   * isolated `BasicTracerProvider`: the SDK calls `generateSpanId()` for every
+   * Span and `generateTraceId()` only for Spans without a parent. Omit it to
+   * keep the SDK's random generator.
+   */
+  idGenerator?: IdGenerator;
 }
 
 /** Transport-only options; the Resource is supplied separately. */
 type IsolatedOtelTransport = Pick<
   IsolatedOtelOptions,
-  "baggageHeader" | "endpoint" | "headers" | "traceparentHeader"
+  "baggageHeader" | "endpoint" | "headers" | "idGenerator" | "traceparentHeader"
 >;
 
 export interface IsolatedOtelHandle {
@@ -202,6 +211,7 @@ export const createIsolatedOtelRuntime = (
       ];
 
   const tracerProvider = new BasicTracerProvider({
+    idGenerator: options.idGenerator,
     resource,
     spanProcessors,
   });

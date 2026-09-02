@@ -22,6 +22,11 @@ processors, exporters, and async context. It does not register any global
 provider or context manager, patch fetch, configure metrics, or change the
 main runtime.
 
+An optional `idGenerator` replaces that provider's random trace and span ID
+generator with any OpenTelemetry `IdGenerator`; it is forwarded unchanged, so
+the SDK's own rules apply: every Span asks it for a span ID, and only a Span
+without a parent asks it for a trace ID.
+
 Unlike `setupOtel()`, which is an idempotent process-wide singleton, this is a
 plain factory: every call returns a new independent runtime that the caller owns
 and shuts down.
