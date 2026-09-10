@@ -32,6 +32,8 @@ import {
   BasicTracerProvider,
   BatchSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
+import { flushFetchRecords } from "./fetch-record";
+import { resolveFetchRecordOptions } from "./fetch-record-options";
 import {
   type FetchInstrumentation,
   type InstrumentFetchOptions,
@@ -227,6 +229,9 @@ function startFetchInstrumentation(
  * `headers` arguments — this matches the OpenTelemetry SDK config spec.
  */
 export function setupOtel(options: SetupOtelOptions): OtelHandle {
+  if (typeof options.instrumentFetch === "object") {
+    resolveFetchRecordOptions(options.instrumentFetch.record);
+  }
   if (activeHandle) {
     return activeHandle;
   }
@@ -349,6 +354,7 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
     meterProvider,
     async shutdown() {
       fetchInstrumentation?.unpatch();
+      await flushFetchRecords();
       await Promise.allSettled([
         tracerProvider.shutdown(),
         loggerProvider.shutdown(),

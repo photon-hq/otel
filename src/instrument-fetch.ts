@@ -2,9 +2,11 @@ import {
   type Attributes,
   context,
   propagation,
+  type Span,
   SpanKind,
   SpanStatusCode,
 } from "@opentelemetry/api";
+import { isTracingSuppressed } from "@opentelemetry/core";
 import {
   ATTR_ERROR_TYPE,
   ATTR_HTTP_REQUEST_METHOD,
@@ -13,6 +15,11 @@ import {
   ATTR_SERVER_PORT,
   ATTR_URL_FULL,
 } from "@opentelemetry/semantic-conventions";
+import { createFetchRecorder, type FetchRecording } from "./fetch-record";
+import {
+  type FetchRecordOptions,
+  resolveFetchRecordOptions,
+} from "./fetch-record-options";
 import { sanitizeErrorMessage } from "./sanitize";
 import { resolveTracer } from "./scope";
 import { PHOTON_OTEL_VERSION } from "./version";
@@ -31,6 +38,8 @@ export interface FetchSpanOptions {
    * query string. The request is still performed — only the span is skipped.
    */
   ignore?: (url: string) => boolean;
+  /** Opt-in OTLP request/response logs. Requires an explicit recording preset. */
+  record?: false | FetchRecordOptions;
   /**
    * Rewrite the request URL before it is stored as `url.full`. Use this to
    * strip tokens/secrets from the query string or path while still keeping the
@@ -117,7 +126,7 @@ function resolveRequestMeta(
   init: FetchInit
 ): { method: string; url: string } {
   if (input instanceof Request) {
-    return { method: input.method, url: input.url };
+    return { method: init?.method ?? input.method, url: input.url };
   }
   const url = typeof input === "string" ? input : input.toString();
   return { method: init?.method ?? "GET", url };
@@ -205,7 +214,14 @@ function buildWrappedFetch(
   options?: FetchSpanOptions
 ): FetchFn {
   const staticAttributes = options?.attributes;
+  const startRecording = createFetchRecorder(
+    resolveFetchRecordOptions(options?.record),
+    options?.redactUrl
+  );
   return (input, init) => {
+    if (isTracingSuppressed(context.active())) {
+      return original(input, init);
+    }
     const { method, url } = resolveRequestMeta(input, init);
     if (options?.ignore?.(url)) {
       return original(input, init);
@@ -215,13 +231,17 @@ function buildWrappedFetch(
       "@photon-ai/otel",
       PHOTON_OTEL_VERSION
     ).startActiveSpan(name, { kind: SpanKind.CLIENT }, async (span) => {
-      if (staticAttributes) {
-        span.setAttributes(staticAttributes);
-      }
-      span.setAttributes(fetchAttributes(name, url, options?.redactUrl));
+      const recording = startRecording();
       try {
+        if (staticAttributes) {
+          span.setAttributes(staticAttributes);
+        }
+        span.setAttributes(fetchAttributes(name, url, options?.redactUrl));
         const headers = buildPropagatedHeaders(input, init);
-        const response = await callOriginal(original, input, init, headers);
+        const response = await (recording
+          ? callRecorded(original, input, init, headers, recording)
+          : callOriginal(original, input, init, headers));
+        recording?.response(response);
         span.setAttribute(ATTR_HTTP_RESPONSE_STATUS_CODE, response.status);
         span.setStatus({
           code:
@@ -231,24 +251,65 @@ function buildWrappedFetch(
         });
         return response;
       } catch (err) {
-        span.recordException(err as Error);
-        const errorObj = err instanceof Error ? err : undefined;
-        span.setAttribute(
-          ATTR_ERROR_TYPE,
-          errorObj?.constructor.name ?? typeof err
-        );
-        span.setStatus({
-          code: SpanStatusCode.ERROR,
-          message: errorObj
-            ? sanitizeErrorMessage(errorObj.message)
-            : sanitizeErrorMessage(String(err)),
-        });
+        recording?.error(err);
+        recordFetchError(span, err);
         throw err;
       } finally {
         span.end();
       }
     });
   };
+}
+
+function recordFetchError(span: Span, error: unknown): void {
+  span.recordException(error as Error);
+  const errorObj = error instanceof Error ? error : undefined;
+  span.setAttribute(
+    ATTR_ERROR_TYPE,
+    errorObj?.constructor.name ?? typeof error
+  );
+  span.setStatus({
+    code: SpanStatusCode.ERROR,
+    message: sanitizeErrorMessage(errorObj ? errorObj.message : String(error)),
+  });
+}
+
+function callRecorded(
+  original: FetchFn,
+  input: FetchInput,
+  init: FetchInit,
+  headers: Headers,
+  recording: FetchRecording
+): Promise<Response> {
+  const fallback = { ...resolveRequestMeta(input, init), headers };
+  if (input instanceof Request && input.bodyUsed && init?.body == null) {
+    // Bun can silently reconstruct a consumed Request as an empty body. Keep
+    // the existing transport path and explicitly mark its body unavailable.
+    recording.request(undefined, fallback);
+    return callOriginal(original, input, init, headers);
+  }
+  let request: Request;
+  try {
+    // Serialize only once (especially FormData boundaries), then clone that
+    // exact body for capture. The dispatch init retains Bun/Node extensions.
+    request =
+      input instanceof Request
+        ? new Request(input, { ...init, headers })
+        : new Request(input.toString(), { ...init, headers });
+  } catch {
+    recording.request(undefined, fallback);
+    return callOriginal(original, input, init, headers);
+  }
+  recording.request(request, fallback);
+  const dispatchInit = {
+    ...init,
+    headers: request.headers,
+    // Inherit the serialized Request body, including its known length/source.
+    // Replacing it with request.body would turn fixed-size uploads into streams.
+    body: undefined,
+    method: request.method,
+  };
+  return original(request, dispatchInit);
 }
 
 /**
@@ -274,6 +335,7 @@ export function createInstrumentedFetch(
   baseFetch: typeof fetch = globalThis.fetch,
   options?: FetchSpanOptions
 ): typeof fetch {
+  resolveFetchRecordOptions(options?.record);
   if (getPatchOriginal(baseFetch)) {
     return baseFetch;
   }
@@ -299,6 +361,7 @@ export function createInstrumentedFetch(
 export function instrumentFetch(
   options?: InstrumentFetchOptions
 ): FetchInstrumentation {
+  resolveFetchRecordOptions(options?.record);
   const current = globalThis.fetch;
   const existingOriginal = getPatchOriginal(current);
   if (existingOriginal) {

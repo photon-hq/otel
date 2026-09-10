@@ -45,7 +45,8 @@ let realFetch: typeof fetch;
 // `network-error` URL throws, simulating a transport failure.
 function makeFakeFetch(): typeof fetch {
   return ((input, init) => {
-    const req = input instanceof Request ? input : new Request(input, init);
+    const req =
+      input instanceof Request ? input : new Request(input.toString(), init);
     const headers: Record<string, string> = {};
     for (const [key, value] of req.headers.entries()) {
       headers[key] = value;

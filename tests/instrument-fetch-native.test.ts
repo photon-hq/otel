@@ -62,6 +62,18 @@ function makeFakeRequire(): {
 }
 
 describe("instrumentFetchNative", () => {
+  it.each([
+    "bounded",
+    "full",
+    "custom",
+  ] as const)("declines native instrumentation when %s recording is requested", (preset) => {
+    const { requireFn, state } = makeFakeRequire();
+    expect(
+      instrumentFetchNative({ record: { preset } }, requireFn)
+    ).toBeUndefined();
+    expect(state.registered).toBe(0);
+  });
+
   it("constructs and registers the undici instrumentation once", () => {
     const { requireFn, state, FakeUndiciInstrumentation } = makeFakeRequire();
     const handle = instrumentFetchNative(undefined, requireFn);

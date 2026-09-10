@@ -98,6 +98,7 @@ attribute guidance, and scoped mode.
 | `createIsolatedOtel(options): IsolatedOtelHandle` | Creates an isolated, non-global trace + log runtime with its own endpoint, Resource, private trace carrier, and optional private Baggage carrier. Returns a new runtime on every call. |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
 | `instrumentFetch(options?): FetchInstrumentation` | Low-level wrap of `globalThis.fetch` for CLIENT spans + W3C propagation. Returns `{ unpatch() }`. `setupOtel` calls this on Bun; on Node it prefers native undici. |
+| `flushFetchRecords({ timeoutMs? }?)` | Drains pending request/response recording, finalizing partial captures at the deadline (5 seconds by default). Flush your own exporters afterward when not using `setupOtel().shutdown()`. |
 | `createInstrumentedFetch(baseFetch?, options?): typeof fetch` | Returns a NEW instrumented fetch (CLIENT spans + W3C propagation) wrapping `baseFetch` (default `globalThis.fetch`) without touching the global. For SDKs that take a `fetch` option. |
 | `createLogger(module): PhotonLogger`          | Returns `{ info, warn, error, debug }`. Each call emits to OTel + `console`, correlates to active span.    |
 | `setLogLevel(level): void`                    | Set the minimum level emitted (`debug`/`info`/`warn`/`error`/`silent`). Programmatic configuration wins over `LOG_LEVEL`. |
@@ -267,6 +268,80 @@ Options (`instrumentFetch`):
 - **`redactUrl`:** `instrumentFetch: { redactUrl: (url) => sanitizeUrl(url, { params: ["token"] }) }`
   rewrites the URL stored as `url.full`, so you keep the span but drop secrets from the query string or
   path. On Node it forces the `globalThis.fetch` wrap (undici can't rewrite `url.full`).
+- **`record`:** opt-in structured request/response logs linked to the fetch span. Select
+  `{ preset: "bounded" }`, `{ preset: "full" }`, or `{ preset: "custom" }` explicitly.
+  Recording forces the wrapper on Node and requires a logs exporter.
+
+### Request and response recording
+
+Recording is disabled by default. Select a preset; `record: true` is invalid:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: {
+    record: { preset: "bounded" },
+  },
+});
+```
+
+| Default | `bounded` | `full` | `custom` |
+| --- | --- | --- | --- |
+| Body bytes per direction | 1 MiB | Unlimited | Unlimited |
+| Body capture time per direction | 30 seconds | Unlimited | Unlimited |
+| Concurrent recorded fetches per wrapper | 32 | Unlimited | Unlimited |
+| Headers | Allowlist | All | All |
+| Custom parsers | Not supported | Not supported | Optional |
+
+All presets support `maxBodyBytes`, `bodyTimeoutMs`, `maxConcurrentCaptures`, and
+`headers` overrides. `Infinity` removes a numerical limit. The bounded header
+allowlist is `accept`, `content-type`, `content-length`, `x-request-id`, `traceparent`,
+and `retry-after`; override it with header names or `"all"`.
+
+Only `custom` accepts parsers, which receive the entire request/response snapshot:
+
+```ts
+const debugFetch = createInstrumentedFetch(undefined, {
+  record: {
+    preset: "custom", // Full defaults; add limits if desired.
+    parseRequest: (request) => ({ ...request, source: "orders-client" }),
+    parseResponse: (response) => {
+      const isJson = response.headers["content-type"]?.some(
+        (value) => value.includes("application/json")
+      );
+      if (!isJson || !response.capture.complete || response.body?.encoding !== "utf8") {
+        return response;
+      }
+      return { ...response, parsedBody: JSON.parse(response.body.data) };
+    },
+  },
+});
+```
+
+Use `setupOtel({ ..., instrumentFetch: false })` when instrumenting clients separately.
+Calling a wrapper again does not replace its existing configuration.
+
+Without a parser, bodies stay raw: lossless UTF-8 or base64, never automatic JSON,
+form, or SSE parsing. Custom parsers may be async and must return JSON-compatible
+values. `parserTimeoutMs` defaults to 5 seconds. Parser failures default to raw
+fallback plus error details; use `onParserError: "omit"` when parsers remove
+sensitive content. Only `custom` accepts these parser settings.
+
+Records are DEBUG OTLP logs named `photon.fetch.request`, `photon.fetch.response`,
+and `photon.fetch.error`, with the fetch span's trace/span IDs. They do not print
+to the console and are independent of `createLogger()`'s log level. Bodies are
+read from clones in the background; the application receives the original response
+without waiting for recording. `shutdown()` drains pending records before exporter
+shutdown. Standalone instrumentation can call `await flushFetchRecords()` before
+shutting down its own providers; this drains capture, not the exporters themselves.
+
+`full` and `custom` collect all Fetch-visible headers, including credentials and
+cookies, and may buffer large or never-ending bodies. They are explicit debugging
+choices. Records identify incomplete captures and their reasons; full capture is
+limited to Fetch-visible data and cannot guarantee delivery past process crashes or
+backend limits. See the [fetch instrumentation guide](docs/guides/fetch-instrumentation.mdx)
+for the record format, limits, parser failure behavior, and shutdown details.
 
 Caveats:
 

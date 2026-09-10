@@ -22,6 +22,21 @@ function fetchInstrumentationActive(): boolean {
 }
 
 describe("setupOtel scoped mode", () => {
+  it("forces the wrapper for recording even in global auto mode", async () => {
+    const original = globalThis.fetch;
+    const handle = setupOtel({
+      serviceName: "recorded-fetch",
+      instrumentFetch: { record: { preset: "full" } },
+    });
+    try {
+      expect(globalThis.fetch).not.toBe(original);
+      expect(dc.hasSubscribers(UNDICI_CHANNEL)).toBe(false);
+    } finally {
+      await handle.shutdown();
+      globalThis.fetch = original;
+    }
+  });
+
   afterEach(async () => {
     if (isOtelActive()) {
       await setupOtel({ serviceName: "cleanup" }).shutdown();

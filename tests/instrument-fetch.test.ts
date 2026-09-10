@@ -48,7 +48,8 @@ let realFetch: typeof fetch;
 // throws, simulating a transport failure.
 function makeFakeFetch(): typeof fetch {
   return (async (input, init) => {
-    const req = input instanceof Request ? input : new Request(input, init);
+    const req =
+      input instanceof Request ? input : new Request(input.toString(), init);
     const headers: Record<string, string> = {};
     for (const [key, value] of req.headers.entries()) {
       headers[key] = value;
@@ -167,7 +168,7 @@ describe("instrumentFetch", () => {
     globalThis.fetch = (() =>
       Promise.reject(
         new Error("failed for foo.bar@example.com")
-      )) as typeof fetch;
+      )) as unknown as typeof fetch;
     instrumentFetch();
 
     await expect(fetch("https://api.example.com/x")).rejects.toThrow();
