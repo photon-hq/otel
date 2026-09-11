@@ -286,7 +286,7 @@ setupOtel({
 });
 ```
 
-| Default | `bounded` | `full` | `custom` |
+| Setting | `bounded` | `full` | `custom` |
 | --- | --- | --- | --- |
 | Body bytes per direction | 1 MiB | Unlimited | Unlimited |
 | Body capture time per direction | 30 seconds | Unlimited | Unlimited |

@@ -15,6 +15,7 @@ import {
   type ResolvedFetchRecordOptions,
   validateFlushTimeout,
 } from "./fetch-record-options";
+import { sanitizeErrorMessage } from "./sanitize";
 import { resolveLogger } from "./scope";
 import { PHOTON_OTEL_VERSION } from "./version";
 
@@ -153,11 +154,11 @@ function errorDetails(error: unknown): {
   if (error instanceof Error) {
     return {
       name: error.name,
-      message: error.message,
-      ...(error.stack ? { stack: error.stack } : {}),
+      message: sanitizeErrorMessage(error.message),
+      ...(error.stack ? { stack: sanitizeErrorMessage(error.stack) } : {}),
     };
   }
-  return { name: typeof error, message: String(error) };
+  return { name: typeof error, message: sanitizeErrorMessage(String(error)) };
 }
 
 async function parseRecord<T extends FetchRecord>(

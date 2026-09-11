@@ -156,10 +156,14 @@ export class FetchBodyCapture {
       complete: reason === undefined,
       ...(reason ? { reason } : {}),
     };
-    this.resolve({
-      body: this.available ? encodeBody(this.chunks, this.byteLength) : null,
-      capture,
-    });
+    let body: FetchRecordBody | null = null;
+    try {
+      body = this.available ? encodeBody(this.chunks, this.byteLength) : null;
+    } catch {
+      capture.complete = false;
+      capture.reason = "read_failure";
+    }
+    this.resolve({ body, capture });
     this.chunks.length = 0;
   }
 }

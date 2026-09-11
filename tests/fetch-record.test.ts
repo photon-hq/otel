@@ -23,6 +23,7 @@ import {
   vi,
 } from "vitest";
 import { flushFetchRecords } from "../src/fetch-record";
+import { FetchBodyCapture } from "../src/fetch-record-body";
 import {
   type FetchRecordCapture,
   type FetchRecordOptions,
@@ -31,7 +32,7 @@ import {
   resolveFetchRecordOptions,
 } from "../src/fetch-record-options";
 import { createInstrumentedFetch } from "../src/instrument-fetch";
-import { sanitizeUrl } from "../src/sanitize";
+import { sanitizeErrorMessage, sanitizeUrl } from "../src/sanitize";
 import { clearActiveProviders, setActiveProviders } from "../src/scope";
 
 interface Envelope<T> {
@@ -118,6 +119,37 @@ afterEach(async () => {
 });
 
 describe("fetch recording", () => {
+  it.each([
+    "concat",
+    "base64",
+  ] as const)("settles an incomplete capture when %s encoding throws", async (failure) => {
+    const concatenate = vi.spyOn(Buffer, "concat");
+    if (failure === "concat") {
+      concatenate.mockImplementationOnce(() => {
+        throw new RangeError("encoding failed");
+      });
+    } else {
+      const bytes = Buffer.from([255]);
+      vi.spyOn(bytes, "toString").mockImplementation(() => {
+        throw new RangeError("encoding failed");
+      });
+      concatenate.mockReturnValueOnce(bytes);
+    }
+    const options = resolveFetchRecordOptions({ preset: "full" });
+    if (!options) {
+      throw new Error("Missing recording options");
+    }
+    const recording = new FetchBodyCapture(
+      new Response(new Uint8Array([255])),
+      options
+    );
+    await expect(recording.result).resolves.toEqual({
+      body: null,
+      capture: { capturedBytes: 1, complete: false, reason: "read_failure" },
+    });
+    expect(concatenate).toHaveBeenCalled();
+  });
+
   it("does not rebuild a consumed Request or claim its missing body is complete", async () => {
     const request = new Request("https://example.test", {
       method: "POST",
@@ -706,21 +738,47 @@ describe("fetch recording", () => {
   });
 
   it("records network errors without a fabricated response or changing the rejection", async () => {
-    const error = new TypeError("network failed");
+    const url = "https://example.test/orders?token=secret";
+    const message = `network failed for foo.bar@example.com at ${url}`;
+    const error = new TypeError(message);
+    const stack = `TypeError: ${message}\ncontact +13315553374\n    at ${url}`;
+    error.stack = stack;
     const base = (() => Promise.reject(error)) as unknown as typeof fetch;
     const fetch = createInstrumentedFetch(base, { record: { preset: "full" } });
-    await expect(
-      fetch("https://example.test", { method: "POST", body: "evidence" })
-    ).rejects.toBe(error);
+    await expect(fetch(url, { method: "POST", body: "evidence" })).rejects.toBe(
+      error
+    );
     await flushFetchRecords();
     expect(payload<FetchRequestRecord>("request").body?.data).toBe("evidence");
+    expect(payload<FetchRequestRecord>("request").url).toBe(url);
     expect(envelopes("response")).toHaveLength(0);
     expect(
       logExporter
         .getFinishedLogRecords()
         .find((record) => record.eventName === "photon.fetch.error")?.body
     ).toMatchObject({
-      error: { name: "TypeError", message: "network failed" },
+      error: {
+        name: "TypeError",
+        message: sanitizeErrorMessage(message),
+        stack: sanitizeErrorMessage(stack),
+      },
+    });
+    expect(error.message).toBe(message);
+    expect(error.stack).toBe(stack);
+  });
+
+  it("sanitizes non-Error rejection details without changing the rejection", async () => {
+    const error = "failed for foo.bar@example.com; contact +13315553374";
+    const base = (() => Promise.reject(error)) as unknown as typeof fetch;
+    const fetch = createInstrumentedFetch(base, { record: { preset: "full" } });
+    await expect(fetch("https://example.test")).rejects.toBe(error);
+    await flushFetchRecords();
+    expect(
+      logExporter
+        .getFinishedLogRecords()
+        .find((record) => record.eventName === "photon.fetch.error")?.body
+    ).toMatchObject({
+      error: { name: "string", message: sanitizeErrorMessage(error) },
     });
   });
 
