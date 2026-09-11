@@ -2,6 +2,10 @@
   "name": "@photon-ai/otel",
   "version": "3.8.0",
   "description": "DX-focused OpenTelemetry wrapper for Bun and Node.js: one-call traces, logs, metrics, fetch instrumentation, and PII scrubbing.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/photon-hq/otel.git"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
