@@ -9,10 +9,12 @@ jobs:
     uses: photon-hq/buildspace/.github/workflows/typescript-service-release.yaml@main
     permissions:
       contents: write
+      id-token: write
       # GitHub validates nested job permissions before evaluating job `if`s.
       packages: write
       pull-requests: read
     with:
       service-name: photon-otel
+      use-oidc: true
       publish-command: "bunx clean-publish --package-manager npm"
     secrets: inherit
