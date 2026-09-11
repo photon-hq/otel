@@ -1,3 +1,4 @@
+import { resolveFetchRecordOptions } from "./fetch-record-options";
 import type {
   FetchInstrumentation,
   InstrumentFetchOptions,
@@ -81,14 +82,15 @@ export function instrumentFetchNative(
   options: InstrumentFetchOptions | undefined,
   requireFn: RequireFn
 ): FetchInstrumentation | undefined {
+  const recording = resolveFetchRecordOptions(options?.record);
   // The undici instrumentation exposes no hook to stamp caller-supplied static
   // attributes on every span, nor to rewrite `url.full` for redaction. When
-  // either is requested, decline the native path and let the caller fall back
-  // to the globalThis.fetch wrap (which applies both).
+  // either is requested, or body recording is enabled, decline the native path
+  // and let the caller fall back to the globalThis.fetch wrap.
   const hasStaticAttributes =
     options?.attributes !== undefined &&
     Object.keys(options.attributes).length > 0;
-  if (hasStaticAttributes || options?.redactUrl !== undefined) {
+  if (hasStaticAttributes || options?.redactUrl !== undefined || recording) {
     return;
   }
 

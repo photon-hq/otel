@@ -22,6 +22,24 @@ function fetchInstrumentationActive(): boolean {
 }
 
 describe("setupOtel scoped mode", () => {
+  it("enables the wrapper for recording with scoped providers", async () => {
+    const original = globalThis.fetch;
+    const originalLoggerProvider = logs.getLoggerProvider();
+    const handle = setupOtel({
+      serviceName: "recorded-fetch",
+      register: false,
+      instrumentFetch: { record: { preset: "full" } },
+    });
+    try {
+      expect(globalThis.fetch).not.toBe(original);
+      expect(dc.hasSubscribers(UNDICI_CHANNEL)).toBe(false);
+      expect(logs.getLoggerProvider()).toBe(originalLoggerProvider);
+    } finally {
+      await handle.shutdown();
+      globalThis.fetch = original;
+    }
+  });
+
   afterEach(async () => {
     if (isOtelActive()) {
       await setupOtel({ serviceName: "cleanup" }).shutdown();

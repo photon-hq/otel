@@ -7,6 +7,11 @@ Collector** over OTLP/HTTP, then reads the collector's `file`-exporter output
 back and asserts on the spans, logs, and metrics it actually received: names,
 attributes, status, severity, PII scrubbing, and trace/log correlation.
 
+`fetch-record.test.ts` also checks raw and custom structured fetch records,
+unchanged outgoing request bodies, repeated response cookies, trace/span IDs,
+and background response capture drained by `shutdown()` before the caller reads
+the response. It verifies that explicit recording works with `logLevel: "silent"`.
+
 It is intentionally excluded from `bun run test` (which stays offline). It runs
 via `bun run test:integration` and needs the collector running.
 
@@ -23,7 +28,7 @@ curl -sf http://localhost:13133/ >/dev/null && echo healthy
 
 # 3. Run the test from the repo root
 cd ../..
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun run test:integration
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 bun --bun run test:integration
 
 # (optional) eyeball the raw telemetry the collector received
 cat tests/integration/output/traces.json

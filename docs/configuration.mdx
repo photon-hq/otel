@@ -248,6 +248,33 @@ See [Fetch instrumentation](/guides/fetch-instrumentation) for the runtime diffe
 
 The package always excludes its own OTLP exporter endpoints from fetch instrumentation. That prevents exporter traffic from recursively tracing itself.
 
+### Fetch request and response records
+
+Recording is opt-in and requires an explicit preset:
+
+```ts
+setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: {
+    record: { preset: "bounded" },
+  },
+});
+```
+
+Choose `bounded` for limits (1 MiB per body, 30 seconds per direction, and 32
+concurrent captures per wrapper), `full` for unlimited raw recording, or `custom`
+for full defaults with optional request/response parsers. Only `custom` accepts
+`parseRequest`, `parseResponse`, `parserTimeoutMs`, and `onParserError`.
+`record: true` and missing presets are rejected. All presets allow capture-limit
+and header-selection overrides; there are no recording-specific environment variables.
+
+Records use the OTLP logs pipeline and force wrapper instrumentation on Node.
+They have DEBUG severity but do not use `createLogger()`'s level filter or console
+output. `full` and `custom` capture all available headers, including credentials,
+unless overridden. `shutdown()` drains pending recording before exporter shutdown.
+See [Recording details and examples](/guides/fetch-instrumentation#request-and-response-recording).
+
 ## Environment variable precedence
 
 | Configuration | Highest priority | Lower priority |

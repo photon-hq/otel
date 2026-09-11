@@ -1,4 +1,14 @@
 // biome-ignore lint/performance/noBarrelFile: package public entry point
+export { flushFetchRecords } from "./fetch-record";
+export type {
+  FetchCaptureReason,
+  FetchRecordBody,
+  FetchRecordCapture,
+  FetchRecordOptions,
+  FetchRecordParser,
+  FetchRequestRecord,
+  FetchResponseRecord,
+} from "./fetch-record-options";
 export {
   createInstrumentedFetch,
   type FetchInstrumentation,

@@ -91,6 +91,202 @@ const client = new OpenAI({
 
 **Avoid double-counting on Node.** If `setupOtel()`'s global fetch instrumentation is active (the default uses undici, which captures all undici traffic), an SDK request made through a per-instance wrapper is recorded twice — once by the wrapper, once by undici. When you instrument SDKs per-instance, disable the global path with `instrumentFetch: false`, or reserve per-instance wrapping for SDKs you accept doubling on. Bun does not have this problem: its global wrap only affects `globalThis.fetch`, so a separately-passed instrumented fetch is counted once.
 
+## Request and response recording
+
+Fetch spans normally contain only HTTP metadata. Enable recording to export
+structured request and response logs linked to each fetch span:
+
+```ts
+import { setupOtel } from "@photon-ai/otel";
+
+const otel = setupOtel({
+  serviceName: "orders-api",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: {
+    record: { preset: "bounded" },
+  },
+});
+
+const response = await fetch("https://api.example.com/orders");
+await response.text();
+await otel.shutdown();
+```
+
+The same `record` option works with `instrumentFetch()` and
+`createInstrumentedFetch()`. It forces wrapper instrumentation on Node, including
+in `mode: "auto"`. Configure an OTLP logs endpoint or an external OTel logger
+provider with an exporter: a traces exporter alone cannot deliver these records.
+
+### Choose a preset
+
+Recording is off unless configured. An explicit preset is required; neither
+`record: true` nor `record: {}` is accepted.
+
+| Setting | `bounded` | `full` | `custom` |
+| --- | --- | --- | --- |
+| Body bytes per request/response | 1 MiB | Unlimited | Unlimited |
+| Body capture deadline per direction | 30 seconds | Unlimited | Unlimited |
+| Concurrent captures per wrapper | 32 fetches | Unlimited | Unlimited |
+| Headers | Allowlist | All | All |
+| Custom parsers | Rejected | Rejected | Optional |
+
+These are library defaults, not limits prescribed by OpenTelemetry. `custom`
+starts with **full**, not bounded, defaults. No preset automatically parses body
+content. Override capture settings in any preset:
+
+```ts
+record: {
+  preset: "full",
+  maxBodyBytes: 10 * 1024 * 1024,
+  bodyTimeoutMs: 60_000,
+  maxConcurrentCaptures: 16,
+  headers: ["content-type", "x-request-id"],
+}
+```
+
+Limits accept nonnegative integers or `Infinity`. A zero byte limit records
+metadata without body content; zero concurrency records metadata with a
+`capacity_limit` reason. Capacity is shared by calls through one wrapper and
+released when the exchange's recording completes. Body deadlines begin when
+capture starts for that direction, not when the network request begins.
+
+The bounded header allowlist is `accept`, `content-type`, `content-length`,
+`x-request-id`, `traceparent`, and `retry-after`. Header selection is
+case-insensitive and applies to both directions. `headers: "all"` explicitly
+enables all available headers. Separate `set-cookie` values are retained when
+the runtime exposes them. Other repeated headers retain Fetch's combined value.
+
+Selecting `full` or `custom` captures credentials and cookies unless you override
+header selection. Existing `redactUrl` is applied to recorded URL fields and
+request referrers before parsing or raw fallback. Neither preset automatically
+scrubs bodies. OpenTelemetry recommends [explicit header selection](https://opentelemetry.io/docs/specs/semconv/http/http-spans/)
+and collecting data deliberately.
+
+### Custom parsers
+
+Only `preset: "custom"` permits `parseRequest`, `parseResponse`,
+`parserTimeoutMs`, and `onParserError`. Invalid combinations are rejected by
+TypeScript and at runtime before patching fetch.
+
+```ts
+import { createInstrumentedFetch, setupOtel } from "@photon-ai/otel";
+
+const otel = setupOtel({
+  serviceName: "orders-debug",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: false,
+});
+
+const debugFetch = createInstrumentedFetch(undefined, {
+  record: {
+    preset: "custom",
+    onParserError: "raw",
+    parseRequest: (request) => ({ ...request, source: "orders-client" }),
+    parseResponse: (response) => {
+      const isJson = response.headers["content-type"]?.some(
+        (value) => value.includes("application/json")
+      );
+      if (!isJson || !response.capture.complete || response.body?.encoding !== "utf8") {
+        return response;
+      }
+      return { ...response, parsedBody: JSON.parse(response.body.data) };
+    },
+  },
+});
+
+const response = await debugFetch("https://api.example.com/orders");
+await response.text();
+await otel.shutdown();
+```
+
+Each parser receives a detached snapshot of the **whole record**, including
+headers, metadata, body, and capture status. It runs once when its direction
+finishes or stops and may return a JSON-compatible value or a promise for one.
+The return value replaces the log's `payload`. Returning `null` records a null
+payload. Undefined, cycles, non-finite numbers, BigInt, and non-JSON objects are
+invalid. Request and response parsers can complete independently and out of order.
+
+`parserTimeoutMs` defaults to 5 seconds; `Infinity` removes the timeout. Timeouts
+stop waiting for an asynchronous parser; they cannot interrupt synchronous
+JavaScript or cancel the parser's own external work. Parser work runs under OTel
+tracing suppression so an instrumented fetch inside a parser does not recurse.
+
+- `onParserError: "raw"` (default) retains the untouched, filtered raw snapshot
+  and adds `parserError` and exception details.
+- `onParserError: "omit"` omits the payload and exception text, retaining only
+  capture/timing metadata and the failure category. Use this when the parser
+  removes sensitive content.
+
+Parser mutation cannot corrupt raw fallback or the independent capture status.
+Parser errors and recorder errors never replace the application response or
+network error.
+
+### Record format
+
+Events `photon.fetch.request` and `photon.fetch.response` have a structured log
+body with `schemaVersion: 1`, `direction`, `startedAt`, `finishedAt`, `capture`,
+and `payload`. Times are Unix milliseconds. Trace/span IDs are carried in the
+standard OTel log context, not inside the replaceable payload.
+
+The default request payload contains `url`, `method`, `headers`, `options`,
+`body`, `capture`, `startedAt`, and `finishedAt`. Options include Fetch's standard
+cache, credentials, redirect, referrer, integrity, mode, keepalive, and duplex
+settings where exposed, plus the initial abort state. Request headers include
+injected trace context. `init` method/body overrides are honored, and multipart
+capture uses the same serialization sent to the server.
+
+The response payload contains `url`, `status`, `statusText`, `ok`, `redirected`,
+`type`, `headers`, `body`, `capture`, `startedAt`, and `finishedAt`.
+
+Bodies are `{ data, encoding: "utf8" | "base64", byteLength }`. UTF-8 is used
+only when lossless, including any BOM; otherwise bytes are base64 encoded. An
+absent body is `null`, while an empty readable body has zero bytes and empty
+`data`. `capture` contains `capturedBytes`, `complete`, and an optional `reason`:
+`size_limit`, `timeout`, `capacity_limit`, `abort`, `unavailable_body`,
+`read_failure`, or `shutdown`. An exact byte-limit match is complete only after
+EOF is observed. Partially captured multibyte characters are preserved as bytes.
+
+On network failure, `photon.fetch.error` carries error details and a timestamp.
+Available request evidence is retained; a response record is not fabricated.
+
+Records are emitted directly through the OTel logger with DEBUG severity. They
+do not print to the console and are independent of `createLogger()` level
+filtering and span sampling. Exporter/backend filtering still applies. Logger
+ownership and trace context are captured at fetch start, including in scoped mode.
+
+### Streams, flushing, and limitations
+
+Recording reads cloned bodies independently and returns the original response
+without awaiting body reads or parsers. The fetch span still ends when response
+headers arrive. Logs are emitted separately when each direction finishes.
+
+Independent cloning may buffer data for a slow or unread application branch and
+can continue after the application cancels its branch. Full recording can use
+unbounded memory for very large or never-ending streams. For such streams,
+choose bounded capture, set explicit limits, or flush when evidence is needed.
+
+`setupOtel().shutdown()` drains pending capture before shutting down exporters.
+For standalone instrumentation:
+
+```ts
+import { flushFetchRecords } from "@photon-ai/otel";
+
+await flushFetchRecords({ timeoutMs: 5000 });
+// Then flush/shut down the OTel providers you own.
+```
+
+Flush waits for recordings started before the call. At its deadline it emits
+available prefixes marked `shutdown`, stops waiting for parsers, and closes
+only the recording branches. The real fetch is not aborted. Responses whose
+headers arrive after that recording was stopped are not captured. Calls begun
+after flush starts are outside that drain; stop starting work before shutdown.
+`timeoutMs: Infinity` waits indefinitely. `unpatch()` restores fetch but does
+not itself drain existing recordings.
+
+“Full” means Fetch-visible data. Hidden redirect hops, transport-added headers,
+wire framing, and compressed transport bytes may be unavailable. Crashes,
+exporter queues, backend size limits, and filtering can still prevent delivery.
+
 ## Filtering URLs
 
 Use `ignore` to skip noisy or sensitive requests.
@@ -105,6 +301,7 @@ When a URL is ignored:
 
 - the original request still runs
 - no span is emitted
+- no request/response records are emitted
 - trace headers are not injected by this wrapper
 
 Use this for health checks or high-volume polling. To keep the span but hide a secret in the URL, reach for `redactUrl` instead (below).
