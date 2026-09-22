@@ -73,6 +73,7 @@ const BOUNDED_TIMEOUT_MS = 30_000;
 const BOUNDED_CONCURRENCY = 32;
 const PARSER_TIMEOUT_MS = 5000;
 const MAX_TIMER_MS = 2_147_483_647;
+export const DEFAULT_FLUSH_TIMEOUT_MS = 5000;
 const BOUNDED_HEADERS = [
   "accept",
   "content-type",
@@ -92,13 +93,14 @@ function limit(value: number, name: string, timer = false): number {
   if (value === Number.POSITIVE_INFINITY) {
     return value;
   }
-  if (
-    !Number.isSafeInteger(value) ||
-    value < 0 ||
-    (timer && value > MAX_TIMER_MS)
-  ) {
+  if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError(
-      `record.${name} must be a nonnegative integer or Infinity`
+      `${name} must be a nonnegative safe integer or Infinity`
+    );
+  }
+  if (timer && value > MAX_TIMER_MS) {
+    throw new TypeError(
+      `${name} must not exceed ${MAX_TIMER_MS} milliseconds or must be Infinity`
     );
   }
   return value;
@@ -174,31 +176,31 @@ export function resolveRecordOptions<TRequest, TResponse>(
     bodyTimeoutMs: limit(
       options.bodyTimeoutMs ??
         (bounded ? BOUNDED_TIMEOUT_MS : Number.POSITIVE_INFINITY),
-      "bodyTimeoutMs",
+      "record.bodyTimeoutMs",
       true
     ),
     headers: resolveHeaders(options.headers, bounded),
     maxBodyBytes: limit(
       options.maxBodyBytes ??
         (bounded ? BOUNDED_BODY_BYTES : Number.POSITIVE_INFINITY),
-      "maxBodyBytes"
+      "record.maxBodyBytes"
     ),
     maxConcurrentCaptures: limit(
       options.maxConcurrentCaptures ??
         (bounded ? BOUNDED_CONCURRENCY : Number.POSITIVE_INFINITY),
-      "maxConcurrentCaptures"
+      "record.maxConcurrentCaptures"
     ),
     onParserError: options.onParserError ?? "raw",
     parseRequest: options.parseRequest,
     parseResponse: options.parseResponse,
     parserTimeoutMs: limit(
       options.parserTimeoutMs ?? PARSER_TIMEOUT_MS,
-      "parserTimeoutMs",
+      "record.parserTimeoutMs",
       true
     ),
   };
 }
 
 export function validateFlushTimeout(timeoutMs: number): number {
-  return limit(timeoutMs, "flush.timeoutMs", true);
+  return limit(timeoutMs, "timeoutMs", true);
 }

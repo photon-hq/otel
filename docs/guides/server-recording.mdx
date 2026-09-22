@@ -18,6 +18,10 @@ request, response, and error records can be paired without a trace.
 Create one recorder per server or policy, not once per request. Its admission
 counter limits concurrent body captures across requests.
 
+`redactUrl` transforms request and response URLs only in recorded telemetry;
+it does not change application URLs. Without it, URLs are recorded unchanged.
+If it throws, the recorded URL becomes `REDACTED`.
+
 ```ts
 import { createHttpServerRecorder } from "@photon-ai/otel";
 
@@ -58,7 +62,9 @@ An unhandled exception creates an error record without fabricating a response.
 If another middleware converts that exception into an HTTP response, record at
 that outer response boundary instead.
 
-The first `response()`, `error()`, request abort, or shutdown completion wins.
+For both HTTP and RPC, call `response()` on success or `error()` on an unhandled
+failure so the recording can finish. The first `response()`, `error()`, request
+abort, or shutdown completion wins; later terminal calls are ignored.
 The response record means the adapter observed a response, not that the peer
 received every byte. Socket delivery and response-body capture are separate facts.
 
@@ -188,8 +194,10 @@ A capture retains the logger provider and context selected when it began.
 `recording.done` waits for that exchange's captures/parsers to settle; it does
 not flush exporters. Do not await it before returning a business response.
 `flushServerRecords({ timeoutMs })` drains recordings started before the call;
-the default deadline is five seconds. At the deadline, pending bodies/parsers
-are finalized as partial, and calls without a terminal outcome emit
+`timeoutMs` is measured in milliseconds and defaults to `5000`. It accepts
+nonnegative integers up to `2147483647`, or `Infinity` to wait without a deadline.
+At the deadline, pending bodies/parsers are finalized as partial, and calls
+without a terminal outcome emit
 `incomplete` with reason `shutdown`. Late completions cannot create duplicate
 terminal records. This does not stop application handlers or their streams.
 
@@ -197,4 +205,3 @@ terminal records. This does not stop application handlers or their streams.
 the providers. With external providers, call `flushServerRecords()` before
 flushing/closing your exporters. The existing `flushFetchRecords()` continues
 to drain fetch recordings only.
-

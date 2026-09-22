@@ -11,6 +11,7 @@ import type {
   FetchResponseRecord,
 } from "./fetch-record-options";
 import {
+  DEFAULT_FLUSH_TIMEOUT_MS,
   type RecordCaptureReason,
   type RecordOptions,
   type RecordParser,
@@ -447,7 +448,9 @@ export function createRpcServerRecorder(options: {
 export async function flushServerRecords(
   options: { timeoutMs?: number } = {}
 ): Promise<void> {
-  const timeoutMs = validateFlushTimeout(options.timeoutMs ?? 5000);
+  const timeoutMs = validateFlushTimeout(
+    options.timeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS
+  );
   const snapshot = [...pending];
   if (snapshot.length === 0) {
     return;

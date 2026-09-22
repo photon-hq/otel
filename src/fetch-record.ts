@@ -11,7 +11,10 @@ import type {
   FetchResponseRecord,
   ResolvedFetchRecordOptions,
 } from "./fetch-record-options";
-import { validateFlushTimeout } from "./record-options";
+import {
+  DEFAULT_FLUSH_TIMEOUT_MS,
+  validateFlushTimeout,
+} from "./record-options";
 import {
   DirectionRecording,
   errorDetails,
@@ -37,7 +40,6 @@ const registryHost = globalThis as unknown as Record<
 >;
 const pending = registryHost[REGISTRY] ?? new Set<PendingRecording>();
 registryHost[REGISTRY] = pending;
-const DEFAULT_FLUSH_TIMEOUT_MS = 5000;
 
 function diagnostic(): void {
   try {
