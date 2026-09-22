@@ -13,6 +13,93 @@ middleware. Start a recording inside the framework's existing server span, or pa
 an explicit OpenTelemetry `context`. Each exchange also gets a `recordId` so its
 request, response, and error records can be paired without a trace.
 
+## Runnable HTTP example
+
+Save this as `server.ts` in a Bun project with `@photon-ai/otel` and
+`@opentelemetry/api` installed. This demo uses an illustrative inventory response,
+not the Cosmos API contract. It expects an OTLP/HTTP collector on port 4318;
+`OTEL_EXPORTER_OTLP_ENDPOINT` can override that endpoint.
+
+```ts
+import { context, propagation, SpanKind } from "@opentelemetry/api";
+import { serve } from "bun";
+import { createHttpServerRecorder, setupOtel } from "@photon-ai/otel";
+
+const otel = setupOtel({
+  serviceName: "inventory-recording-example",
+  endpoint: "http://localhost:4318",
+  instrumentFetch: false,
+});
+const tracer = otel.tracerProvider.getTracer("inventory-example");
+const recordHttp = createHttpServerRecorder({ record: { preset: "bounded" } });
+
+const server = serve({
+  hostname: "127.0.0.1",
+  port: Number(process.env.PORT ?? 3000),
+  fetch(request) {
+    const parent = propagation.extract(
+      context.active(),
+      Object.fromEntries(request.headers)
+    );
+    return tracer.startActiveSpan(
+      "inventory request",
+      { kind: SpanKind.SERVER },
+      parent,
+      (span) => {
+        const requestId =
+          request.headers.get("x-request-id") ?? crypto.randomUUID();
+        const recording = recordHttp(request, { requestId });
+        try {
+          const url = new URL(request.url);
+          const lines = url.searchParams.has("empty")
+            ? []
+            : [{ id: "line-1", availability: "unavailable" }];
+          const response = Response.json(
+            url.pathname === "/lines" ? { lines } : { error: "Not found" },
+            {
+              status: url.pathname === "/lines" ? 200 : 404,
+              headers: { "x-request-id": requestId },
+            }
+          );
+          recording.response(response);
+          return response;
+        } catch (error) {
+          recording.error(error);
+          throw error;
+        } finally {
+          span.end();
+        }
+      }
+    );
+  },
+});
+
+async function shutdown() {
+  await server.stop();
+  await otel.shutdown();
+}
+
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);
+```
+
+```sh
+bun server.ts
+```
+
+In another terminal, compare a populated response, an empty response, and a 404:
+
+```sh
+curl -H 'x-request-id: example-populated' http://127.0.0.1:3000/lines
+curl -H 'x-request-id: example-empty' 'http://127.0.0.1:3000/lines?empty'
+curl -H 'x-request-id: example-not-found' http://127.0.0.1:3000/missing
+```
+
+The sample creates its own server spans. In an instrumented framework, use its
+existing server span instead. The recorder calls themselves do not create spans.
+For a service with an existing logger provider, keep that provider and omit the
+additional `setupOtel()`; drain `flushServerRecords()` before closing its exporters.
+
 ## HTTP: WHATWG Request and Response
 
 Create one recorder per server or policy, not once per request. Its admission
@@ -118,6 +205,13 @@ so rejected RPCs are recorded with the same server context. Install it on every
 listener (for example, both direct and staff faces). HTTP/protocol rejections
 before Connect interceptors run require transport-level recording.
 
+The interceptor above is intended for a service that already initializes OTel.
+Add `recordUnary` after its server tracing interceptor and before its auth
+interceptor in the listener's interceptor list. Keep its generated protobuf
+schemas and existing handler unchanged; the adapter supplies `toJson()` output
+to the recorder. Neither creating `recordRpc` nor upgrading this package installs
+that interceptor automatically.
+
 `error(error, code)` accepts the adapter's RPC status name; omitted codes are
 `UNKNOWN`. HTTP 200 is not used to infer RPC success. Response records use
 `code: "OK"`. Request aborts use `CANCELLED`.
@@ -205,3 +299,31 @@ terminal records. This does not stop application handlers or their streams.
 the providers. With external providers, call `flushServerRecords()` before
 flushing/closing your exporters. The existing `flushFetchRecords()` continues
 to drain fetch recordings only.
+
+## Find the example records in SigNoz
+
+Open Logs and filter by `service.name = inventory-recording-example`, allowing
+DEBUG severity. Search for the example request ID in the structured log body.
+The HTTP response event name is `photon.http.server.response`; unary RPC uses
+`photon.rpc.server.response`. Event-name display and body indexing depend on the
+collector and SigNoz configuration, so inspect the raw structured body if a field
+is not available as a filter.
+
+For the three HTTP calls above, inspect these fields inside the log body:
+
+| Request ID | `payload.status` | `payload.body.data` |
+| --- | --- | --- |
+| example-populated | 200 | `{"lines":[{"id":"line-1","availability":"unavailable"}]}` |
+| example-empty | 200 | `{"lines":[]}` |
+| example-not-found | 404 | `{"error":"Not found"}` |
+
+Each of these small responses should have `capture.complete=true` and
+`payload.body.encoding=utf8`. `recordId` (also exported as the `record.id`
+attribute) pairs the request and response logs; the log's trace/span IDs link to
+the server span. RPC records expose `payload.code` and `payload.body.data`;
+the latter contains the serialized ProtoJSON.
+
+Check `capture.complete`, `capture.reason`, and `parserError` before interpreting
+a missing payload as an empty response. An empty JSON array is recorded content;
+an incomplete capture or omitted parser result is missing evidence. An exception
+without an observed response has an `.error` event instead of a fabricated body.
