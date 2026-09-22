@@ -4,8 +4,8 @@ import type {
   FetchCaptureReason,
   FetchRecordBody,
   FetchRecordCapture,
-  ResolvedFetchRecordOptions,
 } from "./fetch-record-options";
+import type { RecordingPolicy } from "./recording";
 
 export interface CapturedBody {
   body: FetchRecordBody | null;
@@ -41,7 +41,7 @@ export class FetchBodyCapture {
 
   constructor(
     source: Request | Response | undefined,
-    options: ResolvedFetchRecordOptions,
+    options: RecordingPolicy,
     signal?: AbortSignal,
     reason?: FetchCaptureReason
   ) {
@@ -61,7 +61,7 @@ export class FetchBodyCapture {
 
   private start(
     source: Request | Response,
-    options: ResolvedFetchRecordOptions,
+    options: RecordingPolicy,
     signal?: AbortSignal
   ): void {
     try {

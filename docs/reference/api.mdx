@@ -435,3 +435,12 @@ const PHOTON_OTEL_VERSION: string;
 It is used as the instrumentation scope version for package-created tracers and loggers.
 
 The value is read from `package.json` and inlined at build time, so it always matches the published version — the release pipeline bumps `package.json` alone and never needs a matching source edit.
+
+## Server recording
+
+`createHttpServerRecorder(options)` records incoming WHATWG Request/Response exchanges.
+`createRpcServerRecorder(options)` records unary RPC messages serialized by an adapter.
+Both require an explicit `record` preset and emit structured OTLP logs only.
+`flushServerRecords({ timeoutMs? })` drains pending server captures; `setupOtel().shutdown()` includes this automatically.
+
+See the [server recording guide](../guides/server-recording.mdx) for types, framework integration, capture policies, and lifecycle semantics.

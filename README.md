@@ -9,6 +9,7 @@ Vanilla OTel works, but the setup is verbose, the logger plumbing is awkward, an
 - **`otel.getMeter(name)`** — creates standard OpenTelemetry instruments from this setup's meter provider, with identical behavior in global and scoped mode.
 - **`createLogger(module)`** — structured logger that writes to both the OTel logger provider and `console`, with automatic trace correlation and exception capture. Every level (`debug`/`info`/`warn`/`error`) accepts `attrs` **and** an `error`, and shares one configurable level gate.
 - **`withSpan(name, attrs?, fn)`** — wrap any sync or async function in a span; errors are recorded and PII in the error message is scrubbed before being attached to span status.
+- **`createHttpServerRecorder()` / `createRpcServerRecorder()`** — opt-in incoming HTTP and unary RPC request/response records, sent as trace-correlated OTLP logs without console output. See the [server recording guide](./docs/guides/server-recording.mdx).
 - **Automatic `fetch` tracing** — `setupOtel()` instruments outbound `fetch` so every request gets a CLIENT span and W3C trace-context headers. On **Node** it uses the official `@opentelemetry/instrumentation-undici`; on **Bun** — whose native fetch emits nothing for the standard `diagnostics_channel`-based instrumentations — it wraps `globalThis.fetch`. Pass `instrumentFetch: { mode: "global" }` to force the wrap on both for identical spans.
 - **`sanitizeEmail` / `sanitizePhone` / `sanitizeErrorMessage`** — PII helpers you can reuse anywhere.
 
@@ -98,6 +99,9 @@ attribute guidance, and scoped mode.
 | `createIsolatedOtel(options): IsolatedOtelHandle` | Creates an isolated, non-global trace + log runtime with its own endpoint, Resource, private trace carrier, and optional private Baggage carrier. Returns a new runtime on every call. |
 | `isOtelActive(): boolean`                     | Returns `true` if `setupOtel` has already run in this process.                                             |
 | `instrumentFetch(options?): FetchInstrumentation` | Low-level wrap of `globalThis.fetch` for CLIENT spans + W3C propagation. Returns `{ unpatch() }`. `setupOtel` calls this on Bun; on Node it prefers native undici. |
+| `createHttpServerRecorder(options)` | Creates an incoming WHATWG Request/Response recorder for a framework adapter. |
+| `createRpcServerRecorder(options)` | Creates a unary Connect/gRPC message recorder with adapter-owned ProtoJSON serialization. |
+| `flushServerRecords({ timeoutMs? }?)` | Drains server captures before closing external exporters; included in setupOtel shutdown. |
 | `flushFetchRecords({ timeoutMs? }?)` | Drains pending request/response recording, finalizing partial captures at the deadline (5 seconds by default). Flush your own exporters afterward when not using `setupOtel().shutdown()`. |
 | `createInstrumentedFetch(baseFetch?, options?): typeof fetch` | Returns a NEW instrumented fetch (CLIENT spans + W3C propagation) wrapping `baseFetch` (default `globalThis.fetch`) without touching the global. For SDKs that take a `fetch` option. |
 | `createLogger(module): PhotonLogger`          | Returns `{ info, warn, error, debug }`. Each call emits to OTel + `console`, correlates to active span.    |

@@ -10,6 +10,7 @@ It keeps the public API intentionally small:
 - `setupOtel()` boots traces, logs, and metrics with OTLP/HTTP exporters.
 - `otel.getMeter(name)` creates standard metric instruments from the setup-bound provider.
 - `createLogger(module)` emits structured logs to OpenTelemetry and the console.
+- [`createHttpServerRecorder()` / `createRpcServerRecorder()`](./guides/server-recording.mdx) record incoming HTTP and unary RPC payloads as OTLP logs without console output.
 - `withSpan(name, attrs, fn)` wraps sync or async work in a span.
 - `setupOtel()` auto-instruments outbound `fetch` (native undici on Node when its optional packages are installed, otherwise a `globalThis.fetch` wrap, which Bun always uses) for client spans and W3C trace propagation; `instrumentFetch()` and `createInstrumentedFetch()` expose it directly.
 - `sanitizeEmail()`, `sanitizePhone()`, and `sanitizeErrorMessage()` mask common PII before it reaches selected telemetry fields.

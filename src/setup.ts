@@ -48,6 +48,7 @@ import {
 } from "./otlp-config";
 import { IS_BUN } from "./runtime";
 import { clearActiveProviders, setActiveProviders } from "./scope";
+import { flushServerRecords } from "./server-record";
 import {
   type ServiceResourceOptions,
   serviceResourceAttributes,
@@ -354,7 +355,7 @@ export function setupOtel(options: SetupOtelOptions): OtelHandle {
     meterProvider,
     async shutdown() {
       fetchInstrumentation?.unpatch();
-      await flushFetchRecords();
+      await Promise.all([flushFetchRecords(), flushServerRecords()]);
       await Promise.allSettled([
         tracerProvider.shutdown(),
         loggerProvider.shutdown(),

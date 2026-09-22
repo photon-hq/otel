@@ -29,6 +29,11 @@ export {
   type PhotonLogger,
   setLogLevel,
 } from "./logger";
+export type {
+  RecordBody,
+  RecordCapture,
+  RecordCaptureReason,
+} from "./record-options";
 export {
   type SanitizeUrlOptions,
   sanitizeEmail,
@@ -36,6 +41,19 @@ export {
   sanitizePhone,
   sanitizeUrl,
 } from "./sanitize";
+export {
+  createHttpServerRecorder,
+  createRpcServerRecorder,
+  flushServerRecords,
+  type HttpServerRecording,
+  type HttpServerRecordOptions,
+  type RpcRequestRecord,
+  type RpcResponseRecord,
+  type RpcServerRecording,
+  type RpcServerRecordOptions,
+  type RpcServerRequest,
+  type ServerRecordContext,
+} from "./server-record";
 export {
   isOtelActive,
   type OtelHandle,
