@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   stage:
-    uses: photon-hq/buildspace/.github/workflows/package-stage.yml@7b32301d952d2456b3772c68768e284894f7a48a
+    uses: photon-hq/buildspace/.github/workflows/package-stage.yml@c138cb2dd12f5a7bf613458fd8d81cad8b0fd7ff
     permissions:
       contents: write
       packages: write
