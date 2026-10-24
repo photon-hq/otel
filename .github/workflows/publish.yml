@@ -3,6 +3,8 @@ name: Publish staging
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -34,4 +36,4 @@ jobs:
       install: bun install --frozen-lockfile
       verify: bun x ultracite check && bun run test
       pack: bun scripts/pack-release.ts
-      dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+      dry-run: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
