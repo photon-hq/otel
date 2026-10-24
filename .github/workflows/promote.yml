@@ -1,0 +1,26 @@
+name: Promote to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_version:
+        type: string
+        default: ""
+        description: Staging version to promote (blank promotes the current staging tag)
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    uses: photon-hq/buildspace/.github/workflows/package-promote.yml@7b32301d952d2456b3772c68768e284894f7a48a
+    permissions:
+      contents: write
+      packages: read
+      actions: read
+      attestations: read
+      id-token: write
+    with:
+      registry: https://registry.npmjs.org
+      package: "@photon-ai/otel"
+      staging-version: ${{ inputs.staging_version }}
