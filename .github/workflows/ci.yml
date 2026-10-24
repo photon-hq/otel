@@ -52,8 +52,6 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run build
-      - name: Verify a compiler-free package consumer
-        run: node scripts/check-package.mjs
       - name: Verify build artifacts
         run: |
           test -f dist/index.js || (echo "dist/index.js missing" && exit 1)

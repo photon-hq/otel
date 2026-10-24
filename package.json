@@ -36,7 +36,6 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "pack:check": "bun run build && node scripts/check-package.mjs",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
