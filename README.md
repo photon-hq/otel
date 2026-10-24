@@ -452,6 +452,20 @@ If you need gRPC, instantiate your own exporter and processor with `@opentelemet
 
 This package is framework-agnostic. For Elysia.js (Bun-native), see the [`elysiajs-otel` skill](https://github.com/anthropics/claude-code) for a recipe combining `@photon-ai/otel` with `@elysiajs/opentelemetry` auto-instrumentation. A dedicated `@photon-ai/otel-elysia` package may follow.
 
+## Releasing
+
+Every push to `main` publishes a staging build, `X.Y.Z-staging.<run>.<attempt>`,
+to npm under the `staging` dist-tag, and stores its `X.Y.Z` production candidate
+on an `otel-staging-*` prerelease. `X.Y.Z` is the `package.json` version, so bump
+it in a pull request before each promotion; a version is released once.
+
+To release, run **Promote to production** with the staging version (blank
+promotes the current `staging` tag) and approve the `production` deployment. It
+publishes the stored candidate under `latest` without rebuilding and tags
+`vX.Y.Z`. Both workflows publish through npm trusted publishing; see buildspace's
+[package stage and promote](https://github.com/photon-hq/buildspace#package-stage-and-promote)
+workflows.
+
 ## License
 
 MIT
