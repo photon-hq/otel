@@ -138,6 +138,8 @@ Good resource attributes:
 
 Avoid putting per-request values in resource attributes. Use span attributes or log attributes for request-specific data.
 
+Every runtime also sets `service.instance.id` to a random id generated once per process, so replicas of one service report separate metric series instead of overwriting each other. Set `resourceAttributes["service.instance.id"]` to override it.
+
 ## Deployment environment
 
 `DEPLOYMENT_ENV` is attached as the resource attribute `deployment.environment`.
