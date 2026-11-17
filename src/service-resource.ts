@@ -1,4 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { Attributes } from "@opentelemetry/api";
+
+// One id per process: replicas of a service then export separate series
+// instead of overwriting each other's cumulative metrics.
+const serviceInstanceId = randomUUID();
 
 /**
  * Service identity shared by every runtime this package builds. `setupOtel()`
@@ -13,14 +18,15 @@ export interface ServiceResourceOptions {
   serviceVersion?: string;
   /**
    * Extra resource attributes attached to every span/log/metric alongside
-   * `service.name` / `service.version`. An explicit entry here overrides the
-   * value derived from `serviceName` / `serviceVersion`.
+   * `service.name` / `service.version` / `service.instance.id`. An explicit
+   * entry here overrides the value this package derives.
    */
   resourceAttributes?: Attributes;
 }
 
 /**
- * Build Resource attributes from service identity. `defaults` sit between the
+ * Build Resource attributes from service identity, including a
+ * `service.instance.id` generated once per process. `defaults` sit between the
  * service keys and `resourceAttributes`, so a caller can always override them.
  */
 export const serviceResourceAttributes = (
@@ -31,6 +37,7 @@ export const serviceResourceAttributes = (
   ...(options.serviceVersion
     ? { "service.version": options.serviceVersion }
     : {}),
+  "service.instance.id": serviceInstanceId,
   ...defaults,
   ...options.resourceAttributes,
 });
