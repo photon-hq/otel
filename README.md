@@ -456,8 +456,12 @@ This package is framework-agnostic. For Elysia.js (Bun-native), see the [`elysia
 
 Every push to `main` publishes a staging build, `X.Y.Z-staging.<run>.<attempt>`,
 to npm under the `staging` dist-tag, and stores its `X.Y.Z` production candidate
-on an `otel-staging-*` prerelease. `X.Y.Z` is the `package.json` version, so bump
-it in a pull request before each promotion; a version is released once.
+on an `otel-staging-*` prerelease. `X.Y.Z` is computed from the pull requests
+merged since the latest `vX.Y.Z` tag, by their Conventional Commits titles: a
+`feat` raises the minor version, a breaking change (`type!:` or a
+`BREAKING CHANGE` footer) the major version, and anything else the patch
+version. `Release-As: X.Y.Z` in a pull request description asks for at least
+that version. The `package.json` version stays `0.0.0`; do not bump it.
 
 To release, run **Promote to production** with the staging version (blank
 promotes the current `staging` tag) and approve the `production` deployment. It

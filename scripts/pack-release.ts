@@ -11,21 +11,18 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Buildspace's package-stage workflow runs this once for the staging build and
-// once for its production candidate. Each build inlines its own version, so the
-// version is set before building, and package.json is cleaned the way
+// once for its production candidate, with the version it computed from the pull
+// requests merged since the latest release. Each build inlines its own version,
+// so the version is set before building, and package.json is cleaned the way
 // clean-publish released it before. Tracked files are restored either way.
-const STABLE_VERSION = /^\d+\.\d+\.\d+$/;
-
 const destination = process.env.PACK_DESTINATION;
-if (!destination) {
-  throw new Error("PACK_DESTINATION is required");
+const releaseVersion = process.env.RELEASE_VERSION;
+if (!(destination && releaseVersion)) {
+  throw new Error("PACK_DESTINATION and RELEASE_VERSION are required");
 }
 const original = await readFile("package.json", "utf8");
 const manifest = JSON.parse(original);
-if (!STABLE_VERSION.test(manifest.version)) {
-  throw new Error("package.json must declare a stable X.Y.Z version");
-}
-const version = `${manifest.version}${process.env.RELEASE_SUFFIX ?? ""}`;
+const version = `${releaseVersion}${process.env.RELEASE_SUFFIX ?? ""}`;
 
 try {
   await writeFile(
