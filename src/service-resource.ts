@@ -1,9 +1,24 @@
 import { randomUUID } from "node:crypto";
 import type { Attributes } from "@opentelemetry/api";
+import { envDetector } from "@opentelemetry/resources";
 
 // One id per process: replicas of a service then export separate series
 // instead of overwriting each other's cumulative metrics.
 const serviceInstanceId = randomUUID();
+
+const detectEnvResourceAttributes = (): Attributes => {
+  const detected = envDetector.detect().attributes;
+  if (!detected) {
+    return {};
+  }
+  const attributes: Attributes = {};
+  for (const [key, value] of Object.entries(detected)) {
+    if (value !== undefined && !(value instanceof Promise)) {
+      attributes[key] = value;
+    }
+  }
+  return attributes;
+};
 
 /**
  * Service identity shared by every runtime this package builds. `setupOtel()`
@@ -25,19 +40,27 @@ export interface ServiceResourceOptions {
 }
 
 /**
- * Build Resource attributes from service identity, including a
- * `service.instance.id` generated once per process. `defaults` sit between the
- * service keys and `resourceAttributes`, so a caller can always override them.
+ * Build Resource attributes from service identity, standard
+ * `OTEL_RESOURCE_ATTRIBUTES` env detection, and a `service.instance.id`
+ * generated once per process as fallback.
+ *
+ * Precedence (lowest to highest):
+ * 1. Process-generated `service.instance.id`
+ * 2. `defaults` (e.g. `deployment.environment`)
+ * 3. `OTEL_RESOURCE_ATTRIBUTES` (via `@opentelemetry/resources` `envDetector`)
+ * 4. `options.serviceName` / `options.serviceVersion`
+ * 5. `options.resourceAttributes`
  */
 export const serviceResourceAttributes = (
   options: ServiceResourceOptions,
   defaults?: Attributes
 ): Attributes => ({
+  "service.instance.id": serviceInstanceId,
+  ...defaults,
+  ...detectEnvResourceAttributes(),
   "service.name": options.serviceName,
   ...(options.serviceVersion
     ? { "service.version": options.serviceVersion }
     : {}),
-  "service.instance.id": serviceInstanceId,
-  ...defaults,
   ...options.resourceAttributes,
 });
