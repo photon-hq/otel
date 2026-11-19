@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   promote:
-    uses: photon-hq/buildspace/.github/workflows/package-promote.yml@a2c7ceb710769bb38ead49abbe98f2801d2445bd
+    uses: photon-hq/buildspace/.github/workflows/package-promote.yml@cfaaa6a4c8870bc21ced10f732fbbc0f4d23384d
     permissions:
       contents: write
       packages: read

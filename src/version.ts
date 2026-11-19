@@ -5,8 +5,9 @@ import { version } from "../package.json";
  * tracers and loggers.
  *
  * Read from `package.json` rather than duplicated as a literal, so it cannot
- * drift from the released version: the release pipeline bumps `package.json`
- * only, and the bundler inlines this value into `dist/`. The Bun `exports`
- * condition resolves the same field straight from source.
+ * drift from the released version: the release pipeline writes each build's
+ * version to `package.json` before building, and the bundler inlines this value
+ * into `dist/`. The Bun `exports` condition resolves the same field straight
+ * from source. A source checkout reports `0.0.0`.
  */
 export const PHOTON_OTEL_VERSION: string = version;
